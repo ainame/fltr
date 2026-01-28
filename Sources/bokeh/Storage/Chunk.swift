@@ -24,6 +24,14 @@ struct Chunk: Sendable {
         (0..<count).map { storage[$0] }
     }
 
+    /// Direct subscript access without array allocation
+    subscript(index: Int) -> Item {
+        get {
+            precondition(index < count, "Index out of bounds")
+            return storage[index]
+        }
+    }
+
     mutating func append(_ item: Item) -> Bool {
         guard !isFull else { return false }
         storage[count] = item

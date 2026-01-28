@@ -3,13 +3,14 @@ import Collections
 /// Manages chunks for efficient storage and retrieval
 struct ChunkList: Sendable {
     private var chunks: [Chunk]
+    private var cachedCount: Int = 0
 
     init() {
         self.chunks = []
     }
 
     var count: Int {
-        chunks.reduce(0) { $0 + $1.count }
+        cachedCount
     }
 
     var isEmpty: Bool {
@@ -21,12 +22,13 @@ struct ChunkList: Sendable {
             chunks.append(Chunk())
         }
         _ = chunks[chunks.count - 1].append(item)
+        cachedCount += 1
     }
 
     func forEach(_ body: (Item) throws -> Void) rethrows {
         for chunk in chunks {
-            for item in chunk.items {
-                try body(item)
+            for i in 0..<chunk.count {
+                try body(chunk[i])
             }
         }
     }
@@ -35,8 +37,8 @@ struct ChunkList: Sendable {
         var result: [T] = []
         result.reserveCapacity(count)
         for chunk in chunks {
-            for item in chunk.items {
-                result.append(try transform(item))
+            for i in 0..<chunk.count {
+                result.append(try transform(chunk[i]))
             }
         }
         return result
@@ -46,7 +48,7 @@ struct ChunkList: Sendable {
         var remaining = index
         for chunk in chunks {
             if remaining < chunk.count {
-                return chunk.items[remaining]
+                return chunk[remaining]
             }
             remaining -= chunk.count
         }
