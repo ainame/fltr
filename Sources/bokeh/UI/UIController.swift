@@ -432,41 +432,45 @@ actor UIController {
             : ""
         let title = " Preview: \(itemName) "
 
-        // Draw top border with title
-        buffer += "\u{001B}[\(startRow);\(startCol)H"
-        buffer += "╔"
-        let titleStart = (windowWidth - title.count - 2) / 2
-        let leftBorder = String(repeating: "═", count: max(0, titleStart))
-        let rightBorder = String(repeating: "═", count: max(0, windowWidth - titleStart - title.count - 2))
-        buffer += leftBorder + title + rightBorder
-        buffer += "╗"
+        // Clear and draw each line of the window
+        for i in 0..<windowHeight {
+            let row = startRow + i
 
-        // Draw content with left/right borders
-        let contentWidth = windowWidth - 2
-        let contentHeight = windowHeight - 2
-        for i in 0..<contentHeight {
-            let row = startRow + i + 1
-            buffer += "\u{001B}[\(row);\(startCol)H║"
+            // Position cursor and clear entire line first
+            buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
 
-            if i < lines.count {
-                let line = String(lines[i])
-                let truncated = TextRenderer.truncate(line, width: contentWidth)
-                buffer += truncated.padding(toLength: contentWidth, withPad: " ", startingAt: 0)
+            if i == 0 {
+                // Top border with title
+                let titleStart = (windowWidth - title.count - 2) / 2
+                let leftBorder = String(repeating: "═", count: max(0, titleStart))
+                let rightBorder = String(repeating: "═", count: max(0, windowWidth - titleStart - title.count - 2))
+                buffer += "╔" + leftBorder + title + rightBorder + "╗"
+
+            } else if i == windowHeight - 1 {
+                // Bottom border with help text
+                let helpText = " Ctrl-O to close "
+                let bottomLeft = String(repeating: "═", count: (windowWidth - helpText.count - 2) / 2)
+                let bottomRight = String(repeating: "═", count: windowWidth - bottomLeft.count - helpText.count - 2)
+                buffer += "╚" + bottomLeft + helpText + bottomRight + "╝"
+
             } else {
-                buffer += String(repeating: " ", count: contentWidth)
+                // Content line with left/right borders
+                let contentWidth = windowWidth - 2
+                let contentIndex = i - 1
+
+                buffer += "║"
+
+                if contentIndex < lines.count {
+                    let line = String(lines[contentIndex])
+                    let truncated = TextRenderer.truncate(line, width: contentWidth)
+                    buffer += truncated.padding(toLength: contentWidth, withPad: " ", startingAt: 0)
+                } else {
+                    buffer += String(repeating: " ", count: contentWidth)
+                }
+
+                buffer += "║"
             }
-
-            buffer += "║"
         }
-
-        // Draw bottom border with help text
-        buffer += "\u{001B}[\(startRow + windowHeight - 1);\(startCol)H"
-        buffer += "╚"
-        let helpText = " Ctrl-O to close "
-        let bottomLeft = String(repeating: "═", count: (windowWidth - helpText.count - 2) / 2)
-        let bottomRight = String(repeating: "═", count: windowWidth - bottomLeft.count - helpText.count - 2)
-        buffer += bottomLeft + helpText + bottomRight
-        buffer += "╝"
 
         // Draw shadow effect (dim gray characters to the right and bottom)
         let shadowColor = "\u{001B}[2;37m"  // Dim white
