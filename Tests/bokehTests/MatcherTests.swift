@@ -1,142 +1,207 @@
-import XCTest
+import Testing
 @testable import bokeh
 
-final class MatcherTests: XCTestCase {
-    func testBasicMatching() {
-        let matcher = FuzzyMatcher(caseSensitive: false)
+// MARK: - Basic Matching Tests
 
-        // Should match
-        XCTAssertNotNil(matcher.match(pattern: "ap", text: "apple"))
-        XCTAssertNotNil(matcher.match(pattern: "ban", text: "banana"))
-        XCTAssertNotNil(matcher.match(pattern: "che", text: "cherry"))
+@Test("Basic fuzzy matching")
+func basicMatching() {
+    let matcher = FuzzyMatcher(caseSensitive: false)
 
-        // Should not match
-        XCTAssertNil(matcher.match(pattern: "xyz", text: "apple"))
+    // Should match
+    #expect(matcher.match(pattern: "ap", text: "apple") != nil)
+    #expect(matcher.match(pattern: "ban", text: "banana") != nil)
+    #expect(matcher.match(pattern: "che", text: "cherry") != nil)
+
+    // Should not match
+    #expect(matcher.match(pattern: "xyz", text: "apple") == nil)
+}
+
+@Test("Case insensitive matching")
+func caseInsensitiveMatching() {
+    let matcher = FuzzyMatcher(caseSensitive: false)
+
+    #expect(matcher.match(pattern: "APP", text: "apple") != nil)
+    #expect(matcher.match(pattern: "app", text: "APPLE") != nil)
+}
+
+@Test("Case sensitive matching")
+func caseSensitiveMatching() {
+    let matcher = FuzzyMatcher(caseSensitive: true)
+
+    // Should match
+    #expect(matcher.match(pattern: "app", text: "apple") != nil)
+
+    // Should not match (case mismatch)
+    #expect(matcher.match(pattern: "APP", text: "apple") == nil)
+}
+
+@Test("Empty pattern matches with zero score")
+func emptyPattern() {
+    let matcher = FuzzyMatcher()
+
+    let result = matcher.match(pattern: "", text: "apple")
+    #expect(result != nil)
+    #expect(result?.score == 0)
+    #expect(result?.positions == [])
+}
+
+@Test("Match positions tracking")
+func matchPositions() {
+    let matcher = FuzzyMatcher()
+
+    let result = matcher.match(pattern: "ae", text: "apple")
+    #expect(result != nil)
+    // Pattern "ae" should match positions 0 (a) and 4 (e)
+    #expect(result?.positions.count == 2)
+    #expect(result?.positions.contains(0) == true)
+}
+
+@Test("Match scoring validation")
+func matchScoring() {
+    let matcher = FuzzyMatcher()
+
+    let result1 = matcher.match(pattern: "app", text: "apple")
+    let result2 = matcher.match(pattern: "xyz", text: "apple")
+
+    #expect(result1 != nil)
+    #expect(result2 == nil)
+    #expect(result1!.score > 0)
+}
+
+@Test("Word boundary bonus scoring")
+func wordBoundaryBonus() {
+    let matcher = FuzzyMatcher()
+
+    let result1 = matcher.match(pattern: "fb", text: "foo_bar")
+    let result2 = matcher.match(pattern: "fb", text: "foobar")
+
+    #expect(result1 != nil)
+    #expect(result2 != nil)
+
+    // "foo_bar" with delimiter should score higher
+    #expect(result1!.score > result2!.score)
+}
+
+@Test("Match multiple items")
+func matchItems() {
+    let matcher = FuzzyMatcher()
+    let items = [
+        Item(index: 0, text: "apple"),
+        Item(index: 1, text: "apricot"),
+        Item(index: 2, text: "banana"),
+        Item(index: 3, text: "cherry"),
+    ]
+
+    let results = matcher.matchItems(pattern: "ap", items: items)
+
+    // Should match "apple" and "apricot"
+    #expect(results.count == 2)
+    #expect(results.contains { $0.item.text == "apple" })
+    #expect(results.contains { $0.item.text == "apricot" })
+
+    // Results should be sorted by score (descending)
+    if results.count >= 2 {
+        #expect(results[0].score >= results[1].score)
     }
+}
 
-    func testCaseInsensitiveMatching() {
-        let matcher = FuzzyMatcher(caseSensitive: false)
+@Test("Empty pattern matches all items")
+func emptyPatternMatchesAll() {
+    let matcher = FuzzyMatcher()
+    let items = [
+        Item(index: 0, text: "apple"),
+        Item(index: 1, text: "banana"),
+        Item(index: 2, text: "cherry"),
+    ]
 
-        let result1 = matcher.match(pattern: "APP", text: "apple")
-        XCTAssertNotNil(result1)
+    let results = matcher.matchItems(pattern: "", items: items)
+    #expect(results.count == 3)
+}
 
-        let result2 = matcher.match(pattern: "app", text: "APPLE")
-        XCTAssertNotNil(result2)
-    }
+// MARK: - Character Classification Tests
 
-    func testCaseSensitiveMatching() {
-        let matcher = FuzzyMatcher(caseSensitive: true)
+@Test("Character classification")
+func characterClassification() {
+    #expect(CharClass.classify(" ") == .whitespace)
+    #expect(CharClass.classify("_") == .delimiter)
+    #expect(CharClass.classify("-") == .delimiter)
+    #expect(CharClass.classify("a") == .lower)
+    #expect(CharClass.classify("A") == .upper)
+    #expect(CharClass.classify("1") == .number)
+}
 
-        // Should match
-        XCTAssertNotNil(matcher.match(pattern: "app", text: "apple"))
+@Test("Bonus calculation for character positions")
+func bonusCalculation() {
+    // After whitespace should give high bonus
+    #expect(CharClass.bonus(current: .lower, previous: .whitespace) == 8)
 
-        // Should not match (case mismatch)
-        XCTAssertNil(matcher.match(pattern: "APP", text: "apple"))
-    }
+    // After delimiter should give medium bonus
+    #expect(CharClass.bonus(current: .lower, previous: .delimiter) == 7)
 
-    func testEmptyPattern() {
-        let matcher = FuzzyMatcher()
+    // CamelCase transition (lower to upper)
+    #expect(CharClass.bonus(current: .upper, previous: .lower) == 7)
+}
 
-        let result = matcher.match(pattern: "", text: "apple")
-        XCTAssertNotNil(result)
-        XCTAssertEqual(result?.score, 0)
-        XCTAssertEqual(result?.positions, [])
-    }
+// MARK: - Whitespace AND Tests
 
-    func testMatchPositions() {
-        let matcher = FuzzyMatcher()
+@Test("Whitespace acts as AND operator")
+func whitespaceANDMatching() {
+    let matcher = FuzzyMatcher()
 
-        let result = matcher.match(pattern: "ae", text: "apple")
-        XCTAssertNotNil(result)
-        // Pattern "ae" should match positions 0 (a) and 4 (e)
-        XCTAssertEqual(result?.positions.count, 2)
-        XCTAssertTrue(result?.positions.contains(0) ?? false)
-    }
+    // Both tokens must match
+    #expect(matcher.match(pattern: "swift util", text: "swift-argument-parser/Tools/changelog-authors/Util.swift") != nil)
+    #expect(matcher.match(pattern: "swift util", text: "Util.swift in swift project") != nil)
 
-    func testMatchScoring() {
-        let matcher = FuzzyMatcher()
+    // Should not match if one token is missing
+    #expect(matcher.match(pattern: "swift xyz", text: "swift-argument-parser/Util.swift") == nil)
+    #expect(matcher.match(pattern: "xyz util", text: "swift-argument-parser/Util.swift") == nil)
+}
 
-        // Test that matches occur
-        let result1 = matcher.match(pattern: "app", text: "apple")
-        let result2 = matcher.match(pattern: "xyz", text: "apple")
+@Test("Whitespace AND with multiple items")
+func whitespaceANDOrdering() {
+    let matcher = FuzzyMatcher()
+    let items = [
+        Item(index: 0, text: "swift-util-tools"),
+        Item(index: 1, text: "swift-argument-parser"),
+        Item(index: 2, text: "util-swift-helper"),
+        Item(index: 3, text: "other-file"),
+    ]
 
-        XCTAssertNotNil(result1)
-        XCTAssertNil(result2)
+    let results = matcher.matchItems(pattern: "swift util", items: items)
 
-        // Verify scoring is positive for valid matches
-        XCTAssertGreaterThan(result1!.score, 0)
-    }
+    // Should match items containing both "swift" and "util"
+    #expect(results.count == 2)
+    #expect(results.contains { $0.item.text == "swift-util-tools" })
+    #expect(results.contains { $0.item.text == "util-swift-helper" })
 
-    func testWordBoundaryBonus() {
-        let matcher = FuzzyMatcher()
+    // Should not match items missing either token
+    #expect(!results.contains { $0.item.text == "swift-argument-parser" })
+    #expect(!results.contains { $0.item.text == "other-file" })
+}
 
-        // Should prefer word boundaries
-        let result1 = matcher.match(pattern: "fb", text: "foo_bar")
-        let result2 = matcher.match(pattern: "fb", text: "foobar")
+@Test("Multiple whitespace-separated tokens (3+ tokens)")
+func multipleWhitespaceTokens() {
+    let matcher = FuzzyMatcher()
 
-        XCTAssertNotNil(result1)
-        XCTAssertNotNil(result2)
+    // Three tokens - all must match
+    #expect(matcher.match(pattern: "swift arg parser", text: "swift-argument-parser") != nil)
 
-        // "foo_bar" with delimiter should score higher
-        XCTAssertGreaterThan(result1!.score, result2!.score)
-    }
+    // Should fail if any token missing
+    #expect(matcher.match(pattern: "swift arg xyz", text: "swift-argument-parser") == nil)
+}
 
-    func testMatchItems() {
-        let matcher = FuzzyMatcher()
-        let items = [
-            Item(index: 0, text: "apple"),
-            Item(index: 1, text: "apricot"),
-            Item(index: 2, text: "banana"),
-            Item(index: 3, text: "cherry"),
-        ]
+@Test("Whitespace trimming and multiple spaces")
+func whitespaceTrimmingAndEmpty() {
+    let matcher = FuzzyMatcher()
 
-        let results = matcher.matchItems(pattern: "ap", items: items)
+    // Leading/trailing whitespace should be trimmed
+    #expect(matcher.match(pattern: "  swift  ", text: "swift-file") != nil)
 
-        // Should match "apple" and "apricot"
-        XCTAssertEqual(results.count, 2)
-        XCTAssertTrue(results.contains { $0.item.text == "apple" })
-        XCTAssertTrue(results.contains { $0.item.text == "apricot" })
+    // Multiple spaces between tokens should work
+    #expect(matcher.match(pattern: "swift  util", text: "swift-util") != nil)
 
-        // Results should be sorted by score (descending)
-        if results.count >= 2 {
-            XCTAssertGreaterThanOrEqual(results[0].score, results[1].score)
-        }
-    }
-
-    func testEmptyPatternMatchesAll() {
-        let matcher = FuzzyMatcher()
-        let items = [
-            Item(index: 0, text: "apple"),
-            Item(index: 1, text: "banana"),
-            Item(index: 2, text: "cherry"),
-        ]
-
-        let results = matcher.matchItems(pattern: "", items: items)
-
-        // Empty pattern should match all items
-        XCTAssertEqual(results.count, 3)
-    }
-
-    func testCharacterClassification() {
-        XCTAssertEqual(CharClass.classify(" "), .whitespace)
-        XCTAssertEqual(CharClass.classify("_"), .delimiter)
-        XCTAssertEqual(CharClass.classify("-"), .delimiter)
-        XCTAssertEqual(CharClass.classify("a"), .lower)
-        XCTAssertEqual(CharClass.classify("A"), .upper)
-        XCTAssertEqual(CharClass.classify("1"), .number)
-    }
-
-    func testBonusCalculation() {
-        // After whitespace should give high bonus
-        let bonus1 = CharClass.bonus(current: .lower, previous: .whitespace)
-        XCTAssertEqual(bonus1, 8)
-
-        // After delimiter should give medium bonus
-        let bonus2 = CharClass.bonus(current: .lower, previous: .delimiter)
-        XCTAssertEqual(bonus2, 7)
-
-        // CamelCase transition (lower to upper)
-        let bonus3 = CharClass.bonus(current: .upper, previous: .lower)
-        XCTAssertEqual(bonus3, 7)
-    }
+    // Only whitespace should match everything (empty pattern)
+    let items = [Item(index: 0, text: "test")]
+    let results = matcher.matchItems(pattern: "   ", items: items)
+    #expect(results.count == 1)
 }

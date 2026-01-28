@@ -9,20 +9,51 @@ struct FuzzyMatcher: Sendable {
     }
 
     /// Match a pattern against text
+    /// Supports space-separated tokens as AND operator (all tokens must match)
     func match(pattern: String, text: String) -> MatchResult? {
-        FuzzyMatchV2.match(pattern: pattern, text: text, caseSensitive: caseSensitive)
+        // Split pattern by whitespace for AND matching
+        let tokens = pattern.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+
+        guard !tokens.isEmpty else {
+            return MatchResult(score: 0, positions: [])
+        }
+
+        // Single token - use standard matching
+        if tokens.count == 1 {
+            return FuzzyMatchV2.match(pattern: tokens[0], text: text, caseSensitive: caseSensitive)
+        }
+
+        // Multiple tokens - all must match (AND behavior)
+        var totalScore = 0
+        var allPositions: [Int] = []
+
+        for token in tokens {
+            guard let result = FuzzyMatchV2.match(pattern: token, text: text, caseSensitive: caseSensitive) else {
+                // If any token doesn't match, the whole pattern doesn't match
+                return nil
+            }
+            totalScore += result.score
+            allPositions.append(contentsOf: result.positions)
+        }
+
+        // Remove duplicate positions and sort
+        allPositions = Array(Set(allPositions)).sorted()
+
+        return MatchResult(score: totalScore, positions: allPositions)
     }
 
     /// Match pattern against items and return sorted results
     func matchItems(pattern: String, items: [Item]) -> [MatchedItem] {
-        guard !pattern.isEmpty else {
+        let trimmedPattern = pattern.trimmingCharacters(in: .whitespaces)
+
+        guard !trimmedPattern.isEmpty else {
             // Empty pattern matches everything with score 0
             return items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: [])) }
         }
 
         var matched: [MatchedItem] = []
         for item in items {
-            if let result = match(pattern: pattern, text: item.text) {
+            if let result = match(pattern: trimmedPattern, text: item.text) {
                 matched.append(MatchedItem(item: item, matchResult: result))
             }
         }
