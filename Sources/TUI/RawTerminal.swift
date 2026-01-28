@@ -20,7 +20,7 @@ import Glibc
 public actor RawTerminal {
     private var originalTermios: termios?
     private var ttyFd: FileDescriptor?
-    private let stdout = FileDescriptor.standardOutput
+    private let stdoutFd = FileDescriptor.standardOutput
     private var isRawMode = false
 
     public enum TerminalError: Error {
@@ -120,7 +120,7 @@ public actor RawTerminal {
     /// - Throws: `TerminalError.failedToGetSize` if size cannot be determined
     public func getSize() throws -> (rows: Int, cols: Int) {
         var w = winsize()
-        guard ioctl(stdout.rawValue, TIOCGWINSZ, &w) == 0 else {
+        guard ioctl(stdoutFd.rawValue, TIOCGWINSZ, &w) == 0 else {
             throw TerminalError.failedToGetSize
         }
         return (Int(w.ws_row), Int(w.ws_col))
@@ -130,16 +130,13 @@ public actor RawTerminal {
     ///
     /// - Parameter string: The string to write
     public func write(_ string: String) {
-        _ = try? stdout.writeAll(string.utf8)
+        _ = try? stdoutFd.writeAll(string.utf8)
     }
 
     /// Flushes stdout buffer.
     public func flush() {
-        #if os(macOS)
-        fflush(__stdoutp)
-        #elseif os(Linux)
+        // Standard C stdout works on both macOS and Linux
         fflush(stdout)
-        #endif
     }
 
     /// Reads a single byte from terminal input (non-blocking).
