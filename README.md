@@ -288,7 +288,9 @@ find . -type f | bokeh
 
 ## License
 
-See LICENSE file for details.
+MIT License - See LICENSE file for details.
+
+This project includes algorithms inspired by [fzf](https://github.com/junegunn/fzf), which is also MIT licensed. See NOTICE file for full attribution.
 
 ## Contributing
 
@@ -301,6 +303,8 @@ Contributions welcome! Please follow these guidelines:
 
 ## Acknowledgments
 
-- [fzf](https://github.com/junegunn/fzf) - Inspiration for the fuzzy matching algorithm
-- [skim](https://github.com/lotabout/skim) - Inspiration for the architecture
+- [fzf](https://github.com/junegunn/fzf) (MIT) - Fuzzy matching algorithm inspiration and scoring system
+- [skim](https://github.com/lotabout/skim) (MIT) - Architecture inspiration
 - Apple's Swift team for excellent ecosystem libraries
+
+bokeh is a clean-room reimplementation in Swift, inspired by fzf's algorithm concepts but written from scratch.
