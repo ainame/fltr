@@ -6,36 +6,16 @@ A cross-platform fuzzy finder CLI tool written in Swift 6.2.
 
 ## Features
 
-### Phase 1 (MVP - Complete ✅)
-
-- ✓ Read items from stdin
-- ✓ Interactive fuzzy search with real-time filtering
-- ✓ Arrow key navigation (up/down) with smooth scrolling
-- ✓ Enter to select, Esc to abort
-- ✓ Tab for multi-select mode
-- ✓ Output selected items to stdout
-- ✓ Case-insensitive by default
-- ✓ FuzzyMatchV2 algorithm (modified Smith-Waterman with scoring bonuses)
-- ✓ Unicode display width support (CJK, emojis, grapheme clusters)
-- ✓ Dynamic terminal height (uses full screen by default)
-- ✓ Whitespace as AND operator (e.g., "swift util" matches both tokens)
-
-### Phase 2 (Performance - Complete ✅)
-
-- ✓ **Parallel matching** - Distributes work across CPU cores using Swift TaskGroup
-- ✓ **Incremental filtering** - Only searches within previous results when query extends
-- ✓ **Hot path inlining** - @inlinable optimizations for character classification
-- ✓ **Smart threshold** - Uses parallel matching only for datasets >1000 items
-- ✓ **Streaming stdin** - UI starts immediately while still reading input (like fzf)
-- ✓ **Responsive Ctrl-C** - Can interrupt even during massive stdin operations
-
-### Phase 3 (Future)
-
-- **ANSI color support** - Preserve colors from input
-- **Extended search modes** - Exact (`'word`), prefix (`^word`), suffix (`word$`)
-- **Preview window** - Show file contents while browsing
-- **Custom key bindings** - User-configurable shortcuts
-- **Advanced sorting** - By score, length, begin, end
+- **Interactive fuzzy search** with real-time filtering
+- **FuzzyMatchV2 algorithm** (modified Smith-Waterman with scoring bonuses)
+- **Multi-select mode** (`-m`) with Tab to toggle selections
+- **Preview windows** - Split-screen or floating overlay styles
+- **Streaming stdin** - UI starts immediately while still reading input
+- **Parallel matching** - Distributes work across CPU cores for large datasets
+- **Incremental filtering** - Searches within previous results when query extends
+- **Unicode support** - CJK characters, emojis, grapheme clusters
+- **Whitespace as AND** - "swift util" matches items containing both tokens
+- **Case-insensitive** by default (with `--case-sensitive` option)
 
 ## Installation
 
@@ -98,7 +78,7 @@ OPTIONS:
 | Type characters | Filter items with fuzzy matching |
 | `Up` / `Down` / `Ctrl-P` / `Ctrl-N` | Navigate through results (scrolls automatically) |
 | `Enter` | Select current item and exit |
-| `Tab` | Toggle multi-select on current item |
+| `Tab` | Toggle multi-select on current item (requires `-m`) |
 | `Esc` / `Ctrl-C` | Exit without selection |
 | `Ctrl-U` | Clear query |
 | `Ctrl-O` | Toggle preview window on/off |
@@ -376,8 +356,6 @@ Terminal requirements:
 - Access to `/dev/tty` for keyboard input
 
 ## Performance
-
-### Current Performance (Phase 2 Complete)
 
 **Optimization Techniques:**
 - **Parallel Matching**: Distributes work across all CPU cores using Swift TaskGroup
