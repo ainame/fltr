@@ -1,5 +1,5 @@
 import Foundation
-import SwiftTUI
+import TUI
 
 /// Main UI controller - event loop and rendering
 actor UIController {

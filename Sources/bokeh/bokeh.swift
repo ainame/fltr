@@ -1,6 +1,6 @@
 import Foundation
 import ArgumentParser
-import SwiftTUI
+import TUI
 
 @main
 struct Bokeh: AsyncParsableCommand {

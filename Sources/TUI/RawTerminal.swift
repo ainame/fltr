@@ -7,7 +7,7 @@ import Darwin
 import Glibc
 #endif
 
-/// SwiftTUI - A Swift Terminal User Interface library
+/// TUI - A Swift Terminal User Interface library
 ///
 /// `RawTerminal` provides low-level terminal control functionality including:
 /// - Raw mode activation/deactivation

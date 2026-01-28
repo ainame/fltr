@@ -14,9 +14,9 @@ let package = Package(
         .package(url: "https://github.com/ainame/swift-displaywidth", branch: "main"),
     ],
     targets: [
-        // SwiftTUI - Reusable terminal UI library
+        // TUI - Reusable terminal UI library
         .target(
-            name: "SwiftTUI",
+            name: "TUI",
             dependencies: [
                 .product(name: "SystemPackage", package: "swift-system"),
                 .product(name: "DisplayWidth", package: "swift-displaywidth"),
@@ -27,7 +27,7 @@ let package = Package(
         .executableTarget(
             name: "bokeh",
             dependencies: [
-                "SwiftTUI",
+                "TUI",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),

@@ -195,6 +195,34 @@ Both preview modes use `{}` as a placeholder for the selected item text. You can
 
 ## Architecture
 
+bokeh is built with a modular architecture, separating reusable TUI components from application logic:
+
+### Targets
+
+```
+┌─────────────────────────────────────────────┐
+│                  bokeh                      │  ← Executable
+│                                             │
+│  Fuzzy Finder Implementation:               │
+│  - Matcher/     (fuzzy matching algorithm)  │
+│  - Storage/     (item cache, chunks)        │
+│  - Engine/      (parallel matching)         │
+│  - Reader/      (stdin streaming)           │
+│  - UI/          (UIController, UIState)     │
+└──────────────────┬──────────────────────────┘
+                   │ depends on
+                   ↓
+┌─────────────────────────────────────────────┐
+│                TUI                     │  ← Library
+│                                             │
+│  Reusable Terminal UI Foundation:           │
+│  - RawTerminal     (raw mode, I/O, cursor)  │
+│  - KeyboardInput   (key parsing)            │
+│  - TextRenderer    (Unicode, ANSI)          │
+│  - Screen          (virtual buffer)         │
+└─────────────────────────────────────────────┘
+```
+
 ### Component Structure
 
 ```
@@ -203,26 +231,26 @@ Both preview modes use `{}` as a placeholder for the selected item text. You can
 └──────┬──────┘
        │
 ┌──────▼──────────┐
-│  StdinReader    │ ← Reads lines into cache
+│  StdinReader    │ ← Reads lines into cache (bokeh)
 │  (Actor)        │
 └──────┬──────────┘
        │
 ┌──────▼──────────┐
-│   ItemCache     │ ← Chunk-based storage (100 items/chunk)
+│   ItemCache     │ ← Chunk-based storage (bokeh)
 │   (Actor)       │
 └──────┬──────────┘
        │
 ┌──────▼──────────┐
-│ FuzzyMatcher    │ ← FuzzyMatchV2 algorithm
+│ FuzzyMatcher    │ ← FuzzyMatchV2 algorithm (bokeh)
 └──────┬──────────┘
        │
 ┌──────▼──────────┐
-│  UIController   │ ← Event loop, keyboard handling, rendering
+│  UIController   │ ← Event loop, rendering (bokeh)
 │   (Actor)       │
 └──────┬──────────┘
        │
 ┌──────▼──────────┐
-│  RawTerminal    │ ← Terminal control via /dev/tty
+│  RawTerminal    │ ← Terminal control (TUI)
 │   (Actor)       │
 └──────┬──────────┘
        │
@@ -230,6 +258,34 @@ Both preview modes use `{}` as a placeholder for the selected item text. You can
 │    stdout       │ ← Selected items output
 └─────────────────┘
 ```
+
+### TUI Library
+
+TUI is a reusable terminal UI library that can be used independently:
+
+**RawTerminal** - Low-level terminal control
+- Raw mode activation/deactivation
+- Alternate screen buffer
+- Cursor positioning and visibility
+- Non-blocking byte reading
+- Terminal size detection
+
+**KeyboardInput** - Keyboard event parsing
+- ASCII character input
+- Control keys (Ctrl-C, Ctrl-D, etc.)
+- Arrow keys and escape sequences
+- Special keys (Tab, Enter, Backspace)
+
+**TextRenderer** - Unicode-aware text rendering
+- Display width calculation (CJK, emoji, grapheme clusters)
+- ANSI escape sequence preservation
+- Text truncation and padding
+- Syntax highlighting support
+
+**Screen** - Virtual screen buffer
+- Double-buffered rendering
+- Positioned text writing
+- Efficient screen updates
 
 ### Core Algorithms
 
@@ -281,30 +337,31 @@ swift test
 bokeh/
 ├── Package.swift
 ├── README.md
-├── Sources/bokeh/
-│   ├── bokeh.swift           # Main entry point
-│   ├── Terminal/             # Terminal control
-│   │   ├── RawTerminal.swift
-│   │   ├── KeyboardInput.swift
-│   │   ├── TextRenderer.swift
-│   │   └── Screen.swift
-│   ├── Matcher/              # Fuzzy matching
-│   │   ├── FuzzyMatcher.swift
-│   │   ├── Algorithm.swift
-│   │   ├── CharClass.swift
-│   │   └── MatchResult.swift
-│   ├── Storage/              # Item storage
-│   │   ├── Item.swift
-│   │   ├── Chunk.swift
-│   │   ├── ChunkList.swift
-│   │   └── ItemCache.swift
-│   ├── Engine/               # Parallel matching engine (Phase 2)
-│   │   └── MatchingEngine.swift
-│   ├── Reader/               # Input reading
-│   │   └── StdinReader.swift
-│   └── UI/                   # User interface
-│       ├── UIController.swift
-│       └── UIState.swift
+├── Sources/
+│   ├── TUI/             # Reusable TUI library
+│   │   ├── RawTerminal.swift    # Terminal control
+│   │   ├── KeyboardInput.swift  # Key parsing
+│   │   ├── TextRenderer.swift   # Unicode/ANSI text rendering
+│   │   └── Screen.swift         # Virtual screen buffer
+│   └── bokeh/                # Fuzzy finder executable
+│       ├── bokeh.swift          # Main entry point
+│       ├── Matcher/             # Fuzzy matching
+│       │   ├── FuzzyMatcher.swift
+│       │   ├── Algorithm.swift
+│       │   ├── CharClass.swift
+│       │   └── MatchResult.swift
+│       ├── Storage/             # Item storage
+│       │   ├── Item.swift
+│       │   ├── Chunk.swift
+│       │   ├── ChunkList.swift
+│       │   └── ItemCache.swift
+│       ├── Engine/              # Parallel matching
+│       │   └── MatchingEngine.swift
+│       ├── Reader/              # Input reading
+│       │   └── StdinReader.swift
+│       └── UI/                  # User interface
+│           ├── UIController.swift
+│           └── UIState.swift
 └── Tests/
     └── bokehTests/
 ```
