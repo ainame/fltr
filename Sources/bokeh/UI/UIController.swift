@@ -14,6 +14,7 @@ actor UIController {
     private let previewCommand: String?
     private var cachedPreview: String = ""  // Cache to avoid re-running preview on every render
     private var showFloatingPreview: Bool = false  // Toggle floating preview window
+    private var previewScrollOffset: Int = 0  // Scroll offset for preview content
 
     init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, previewCommand: String? = nil) {
         self.terminal = terminal
@@ -144,12 +145,23 @@ actor UIController {
             await updatePreview()
 
         case .up:
-            state.moveUp(visibleHeight: visibleHeight)
-            await updatePreview()
+            if showFloatingPreview {
+                // Scroll preview up
+                previewScrollOffset = max(0, previewScrollOffset - 1)
+            } else {
+                state.moveUp(visibleHeight: visibleHeight)
+                await updatePreview()
+            }
 
         case .down:
-            state.moveDown(visibleHeight: visibleHeight)
-            await updatePreview()
+            if showFloatingPreview {
+                // Scroll preview down
+                let previewLines = cachedPreview.split(separator: "\n").count
+                previewScrollOffset = min(previewLines, previewScrollOffset + 1)
+            } else {
+                state.moveDown(visibleHeight: visibleHeight)
+                await updatePreview()
+            }
 
         case .tab:
             state.toggleSelection()
@@ -159,6 +171,7 @@ actor UIController {
             if previewCommand != nil {
                 showFloatingPreview.toggle()
                 if showFloatingPreview {
+                    previewScrollOffset = 0  // Reset scroll when opening
                     await updatePreview()
                 }
             }
@@ -426,13 +439,13 @@ actor UIController {
         var buffer = ""
         let lines = cachedPreview.split(separator: "\n", omittingEmptySubsequences: false)
 
-        // Get selected item name for title
+        // Get selected item name for title (left-aligned with margin)
         let itemName = !state.matchedItems.isEmpty
             ? state.matchedItems[state.selectedIndex].item.text
             : ""
         // Replace tabs and truncate title to avoid width issues
         let sanitizedName = itemName.replacingOccurrences(of: "\t", with: " ")
-        let maxTitleLength = windowWidth - 14  // Leave room for " Preview: " and borders
+        let maxTitleLength = windowWidth - 16  // Leave room for padding and borders
         let truncatedName = TextRenderer.truncate(sanitizedName, width: maxTitleLength)
         let title = " Preview: \(truncatedName) "
 
@@ -444,26 +457,26 @@ actor UIController {
             buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
 
             if i == 0 {
-                // Top border with title
-                // Use character count for simple ASCII, good enough for title
-                let titleStart = (windowWidth - title.count - 2) / 2
-                let leftBorder = String(repeating: "═", count: max(0, titleStart))
-                let rightBorder = String(repeating: "═", count: max(0, windowWidth - titleStart - title.count - 2))
-                buffer += "╔" + leftBorder + title + rightBorder + "╗"
+                // Top border with title (left-aligned with 2-char left margin)
+                let titleLeftMargin = 2
+                let leftBorder = String(repeating: "─", count: titleLeftMargin)
+                let rightBorder = String(repeating: "─", count: max(0, windowWidth - title.count - titleLeftMargin - 2))
+                buffer += "┌" + leftBorder + title + rightBorder + "┐"
 
             } else if i == windowHeight - 1 {
-                // Bottom border with help text
-                let helpText = " Ctrl-O to close "
-                let bottomLeft = String(repeating: "═", count: (windowWidth - helpText.count - 2) / 2)
-                let bottomRight = String(repeating: "═", count: windowWidth - bottomLeft.count - helpText.count - 2)
-                buffer += "╚" + bottomLeft + helpText + bottomRight + "╝"
+                // Bottom border with help text (centered)
+                let helpText = " ↑/↓ to scroll · Ctrl-O to close "
+                let helpLeftMargin = (windowWidth - helpText.count - 2) / 2
+                let bottomLeft = String(repeating: "─", count: max(0, helpLeftMargin))
+                let bottomRight = String(repeating: "─", count: max(0, windowWidth - helpLeftMargin - helpText.count - 2))
+                buffer += "└" + bottomLeft + helpText + bottomRight + "┘"
 
             } else {
-                // Content line with left/right borders
+                // Content line with left/right borders (single line)
                 let contentWidth = windowWidth - 2
-                let contentIndex = i - 1
+                let contentIndex = i - 1 + previewScrollOffset  // Add scroll offset
 
-                buffer += "║"
+                buffer += "│"
 
                 if contentIndex < lines.count {
                     let line = String(lines[contentIndex])
@@ -475,23 +488,9 @@ actor UIController {
                     buffer += String(repeating: " ", count: contentWidth)
                 }
 
-                buffer += "║"
+                buffer += "│"
             }
         }
-
-        // Draw shadow effect (dim gray characters to the right and bottom)
-        let shadowColor = "\u{001B}[2;37m"  // Dim white
-        let resetColor = "\u{001B}[0m"
-
-        // Right shadow
-        for shadowRow in (startRow + 1)...(startRow + windowHeight) {
-            buffer += "\u{001B}[\(shadowRow);\(startCol + windowWidth)H"
-            buffer += "\(shadowColor)▓\(resetColor)"
-        }
-
-        // Bottom shadow
-        buffer += "\u{001B}[\(startRow + windowHeight);\(startCol + 1)H"
-        buffer += "\(shadowColor)" + String(repeating: "▓", count: windowWidth) + "\(resetColor)"
 
         return buffer
     }
