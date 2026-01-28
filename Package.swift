@@ -14,9 +14,9 @@ let package = Package(
         .package(url: "https://github.com/ainame/swift-displaywidth", branch: "main"),
     ],
     targets: [
-        // BokehCSystem - C system library shims for cross-platform POSIX APIs
+        // FltrCSystem - C system library shims for cross-platform POSIX APIs
         .target(
-            name: "BokehCSystem",
+            name: "FltrCSystem",
             dependencies: []
         ),
 
@@ -24,7 +24,7 @@ let package = Package(
         .target(
             name: "TUI",
             dependencies: [
-                "BokehCSystem",
+                "FltrCSystem",
                 .product(name: "SystemPackage", package: "swift-system"),
                 .product(name: "DisplayWidth", package: "swift-displaywidth"),
             ]

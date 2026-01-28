@@ -1,4 +1,4 @@
-module BokehCSystem {
+module FltrCSystem {
     header "shims.h"
     export *
 }

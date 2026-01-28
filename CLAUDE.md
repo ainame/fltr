@@ -40,7 +40,7 @@ fltr (Executable)
                       ├── TextRenderer   - Unicode display width
                       └── Screen         - Virtual buffer
 
-BokehCSystem (C Shim Library)
+FltrCSystem (C Shim Library)
 └── Cross-platform POSIX APIs for terminal control
 ```
 
@@ -56,7 +56,7 @@ BokehCSystem (C Shim Library)
 
 - **TUI library** (`Sources/TUI/`): Reusable terminal UI foundation that can be used independently.
 
-- **BokehCSystem** (`Sources/BokehCSystem/`): C shims for cross-platform POSIX APIs (ioctl, termios). Required for Linux musl compatibility.
+- **FltrCSystem** (`Sources/FltrCSystem/`): C shims for cross-platform POSIX APIs (ioctl, termios). Required for Linux musl compatibility.
 
 ## UI Features
 

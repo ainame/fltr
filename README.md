@@ -321,7 +321,7 @@ fltr/
 ├── Package.swift
 ├── README.md
 ├── Sources/
-│   ├── BokehCSystem/       # C system shims for cross-platform
+│   ├── FltrCSystem/        # C system shims for cross-platform
 │   ├── TUI/                # Reusable TUI library
 │   │   ├── RawTerminal.swift    # Terminal control
 │   │   ├── KeyboardInput.swift  # Key parsing

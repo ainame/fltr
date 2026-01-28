@@ -1,6 +1,6 @@
 import Foundation
 import SystemPackage
-import BokehCSystem
+import FltrCSystem
 
 /// TUI - A Swift Terminal User Interface library
 ///
@@ -117,7 +117,7 @@ public actor RawTerminal {
         // Use tty fd if available (works when stdout is piped)
         let fd = ttyFd?.rawValue ?? FileDescriptor.standardOutput.rawValue
         let result = withUnsafeMutablePointer(to: &w) { ptr in
-            bokeh_ioctl_TIOCGWINSZ(fd, ptr)
+            fltr_ioctl_TIOCGWINSZ(fd, ptr)
         }
         guard result == 0 else {
             throw TerminalError.failedToGetSize
