@@ -72,12 +72,14 @@ OPTIONS:
 | Key | Action |
 |-----|--------|
 | Type characters | Filter items with fuzzy matching |
-| `Up` / `Down` | Navigate through results |
+| `Up` / `Down` | Navigate through results (scrolls automatically) |
 | `Enter` | Select current item and exit |
 | `Tab` | Toggle multi-select on current item |
 | `Esc` / `Ctrl-C` | Exit without selection |
 | `Ctrl-U` | Clear query |
 | `Backspace` | Delete last character |
+
+**Note:** Results scroll automatically when you navigate beyond the visible area. The status bar shows a scroll percentage indicator `[%]` when there are more items than fit on screen.
 
 ### Examples
 

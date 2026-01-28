@@ -5,6 +5,7 @@ struct UIState: Sendable {
     var query: String = ""
     var cursorPosition: Int = 0
     var selectedIndex: Int = 0
+    var scrollOffset: Int = 0  // First visible item index
     var selectedItems: Set<Int> = []
     var matchedItems: [MatchedItem] = []
     var totalItems: Int = 0
@@ -27,15 +28,24 @@ struct UIState: Sendable {
         cursorPosition = 0
     }
 
-    mutating func moveUp() {
+    mutating func moveUp(visibleHeight: Int) {
         if selectedIndex > 0 {
             selectedIndex -= 1
+            // Scroll up if selected item goes above visible area
+            if selectedIndex < scrollOffset {
+                scrollOffset = selectedIndex
+            }
         }
     }
 
-    mutating func moveDown() {
+    mutating func moveDown(visibleHeight: Int) {
         if selectedIndex < matchedItems.count - 1 {
             selectedIndex += 1
+            // Scroll down if selected item goes below visible area
+            let lastVisibleIndex = scrollOffset + visibleHeight - 1
+            if selectedIndex > lastVisibleIndex {
+                scrollOffset = selectedIndex - visibleHeight + 1
+            }
         }
     }
 
@@ -55,6 +65,8 @@ struct UIState: Sendable {
         if selectedIndex >= items.count {
             selectedIndex = max(0, items.count - 1)
         }
+        // Reset scroll to top when matches change
+        scrollOffset = 0
     }
 
     func getSelectedItems() -> [Item] {

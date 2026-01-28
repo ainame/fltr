@@ -46,6 +46,11 @@ actor UIController {
     }
 
     private func handleKey(byte: UInt8, allItems: [Item]) async {
+        // Calculate visible height for scrolling
+        let (rows, _) = (try? await terminal.getSize()) ?? (24, 80)
+        let availableRows = rows - 3
+        let visibleHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
+
         // Helper to read next byte
         let readNext: () -> UInt8? = {
             // Cannot call async in sync closure, so we'll handle escape sequences differently
@@ -98,10 +103,10 @@ actor UIController {
             state.updateMatches(matcher.matchItems(pattern: state.query, items: allItems))
 
         case .up:
-            state.moveUp()
+            state.moveUp(visibleHeight: visibleHeight)
 
         case .down:
-            state.moveDown()
+            state.moveDown(visibleHeight: visibleHeight)
 
         case .tab:
             state.toggleSelection()
@@ -143,14 +148,19 @@ actor UIController {
     }
 
     private func renderItemList(displayHeight: Int, cols: Int) async {
-        let displayItems = Array(state.matchedItems.prefix(displayHeight))
+        // Get visible slice of matched items based on scrollOffset
+        let startIndex = state.scrollOffset
+        let endIndex = min(startIndex + displayHeight, state.matchedItems.count)
+        let visibleItems = Array(state.matchedItems[startIndex..<endIndex])
 
-        for (index, matchedItem) in displayItems.enumerated() {
-            let row = index + 2
+        for (displayIndex, matchedItem) in visibleItems.enumerated() {
+            let row = displayIndex + 2
+            let actualIndex = startIndex + displayIndex
+
             await terminal.moveCursor(row: row, col: 1)
             await terminal.clearLine()
 
-            let isSelected = state.selectedIndex == index
+            let isSelected = state.selectedIndex == actualIndex
             let isMarked = state.selectedItems.contains(matchedItem.item.index)
 
             var prefix = "  "
@@ -179,11 +189,21 @@ actor UIController {
         await terminal.moveCursor(row: row, col: 1)
         await terminal.clearLine()
 
-        let status: String
+        var status: String
         if state.selectedItems.isEmpty {
             status = "\(state.matchedItems.count)/\(state.totalItems)"
         } else {
             status = "\(state.matchedItems.count)/\(state.totalItems) (\(state.selectedItems.count) selected)"
+        }
+
+        // Add scroll indicator if there are more items than visible
+        let (rows, _) = (try? await terminal.getSize()) ?? (24, 80)
+        let availableRows = rows - 3
+        let displayHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
+
+        if state.matchedItems.count > displayHeight {
+            let scrollPercent = Int((Double(state.scrollOffset) / Double(max(1, state.matchedItems.count - displayHeight))) * 100)
+            status += " [\(scrollPercent)%]"
         }
 
         await terminal.write(TextRenderer.pad(status, width: cols))
