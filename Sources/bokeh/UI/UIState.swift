@@ -3,6 +3,7 @@ import Foundation
 /// UI state management
 struct UIState: Sendable {
     var query: String = ""
+    var previousQuery: String = ""  // For incremental filtering optimization
     var cursorPosition: Int = 0
     var selectedIndex: Int = 0
     var scrollOffset: Int = 0  // First visible item index

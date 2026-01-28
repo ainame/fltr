@@ -10,6 +10,7 @@ enum CharClass: Sendable {
     case letter
     case number
 
+    @inlinable
     static func classify(_ char: Character) -> CharClass {
         if char.isWhitespace {
             return .whitespace
@@ -37,6 +38,7 @@ enum CharClass: Sendable {
     }
 
     /// Calculate bonus for matching at this position
+    @inlinable
     static func bonus(current: CharClass, previous: CharClass) -> Int {
         switch (current, previous) {
         case (_, .whitespace):

@@ -84,11 +84,11 @@ actor UIController {
         switch finalKey {
         case .char(let char):
             state.addChar(char)
-            state.updateMatches(matcher.matchItems(pattern: state.query, items: allItems))
+            updateMatchesIncremental(allItems: allItems)
 
         case .backspace:
             state.deleteChar()
-            state.updateMatches(matcher.matchItems(pattern: state.query, items: allItems))
+            updateMatchesIncremental(allItems: allItems)
 
         case .enter:
             state.shouldExit = true
@@ -100,7 +100,7 @@ actor UIController {
 
         case .ctrlU:
             state.clearQuery()
-            state.updateMatches(matcher.matchItems(pattern: state.query, items: allItems))
+            updateMatchesIncremental(allItems: allItems)
 
         case .up:
             state.moveUp(visibleHeight: visibleHeight)
@@ -114,6 +114,30 @@ actor UIController {
         default:
             break
         }
+    }
+
+    /// Incremental filtering: search within previous results if query is extended
+    private func updateMatchesIncremental(allItems: [Item]) {
+        let newQuery = state.query
+        let prevQuery = state.previousQuery
+
+        // Check if new query extends previous query (e.g., "ab" -> "abc")
+        let canUseIncremental = !prevQuery.isEmpty &&
+                                newQuery.hasPrefix(prevQuery) &&
+                                newQuery.count > prevQuery.count
+
+        let searchItems: [Item]
+        if canUseIncremental {
+            // Search within previous matched items (much faster!)
+            searchItems = state.matchedItems.map { $0.item }
+        } else {
+            // Full search in all items
+            searchItems = allItems
+        }
+
+        let results = matcher.matchItems(pattern: newQuery, items: searchItems)
+        state.updateMatches(results)
+        state.previousQuery = newQuery
     }
 
     private func render() async {
