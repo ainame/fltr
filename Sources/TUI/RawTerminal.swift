@@ -128,13 +128,21 @@ public actor RawTerminal {
     /// - Parameter string: The string to write
     public func write(_ string: String) {
         _ = string.withCString { ptr in
+            #if os(macOS)
             Darwin.write(stdout, ptr, strlen(ptr))
+            #elseif os(Linux)
+            Glibc.write(stdout, ptr, strlen(ptr))
+            #endif
         }
     }
 
     /// Flushes stdout buffer.
     public func flush() {
+        #if os(macOS)
         fflush(__stdoutp)
+        #elseif os(Linux)
+        fflush(stdout)
+        #endif
     }
 
     /// Reads a single byte from terminal input (non-blocking).
@@ -143,7 +151,11 @@ public actor RawTerminal {
     public func readByte() -> UInt8? {
         guard let fd = ttyFd else { return nil }
         var byte: UInt8 = 0
+        #if os(macOS)
         let result = Darwin.read(fd, &byte, 1)
+        #elseif os(Linux)
+        let result = Glibc.read(fd, &byte, 1)
+        #endif
         return result == 1 ? byte : nil
     }
 
