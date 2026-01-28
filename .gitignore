@@ -1,8 +1,22 @@
-.DS_Store
-/.build
-/Packages
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Xcode
 xcuserdata/
-DerivedData/
-.swiftpm/configuration/registries.json
-.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
-.netrc
+*.xcodeproj
+*.xcworkspace
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Build artifacts
+*.dSYM.zip
+*.dSYM
+
+# Development
+.env
