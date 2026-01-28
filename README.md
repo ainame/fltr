@@ -77,13 +77,17 @@ find / -type f 2>/dev/null | bokeh
 ```bash
 bokeh --help
 
-USAGE: bokeh [--height <height>] [--multi] [--case-sensitive]
+USAGE: bokeh [--height <height>] [--multi] [--case-sensitive] [--preview <preview>] [--preview-float <preview-float>]
 
 OPTIONS:
   -h, --height <height>   Maximum display height (number of result lines)
                           Omit to use full terminal height (default)
   -m, --multi             Enable multi-select mode
   --case-sensitive        Enable case-sensitive matching
+  --preview <command>     Preview command (split-screen style, like fzf)
+                          Use {} as placeholder for item text
+  --preview-float <command> Preview command (floating window overlay)
+                          Use {} as placeholder for item text
   --help                  Show help information
 ```
 
@@ -97,7 +101,7 @@ OPTIONS:
 | `Tab` | Toggle multi-select on current item |
 | `Esc` / `Ctrl-C` | Exit without selection |
 | `Ctrl-U` | Clear query |
-| `Ctrl-O` | Toggle floating preview window (when --preview is used) |
+| `Ctrl-O` | Toggle preview window on/off |
 | `Backspace` | Delete last character |
 
 **Note:** Results scroll automatically when you navigate beyond the visible area. The status bar shows a scroll percentage indicator `[%]` when there are more items than fit on screen.
@@ -120,42 +124,77 @@ cat words.txt | bokeh --case-sensitive
 # Full terminal height is great for large datasets
 find . -type f | bokeh  # Shows as many results as fit on your screen
 
-# Preview file contents with floating window
-find . -name "*.swift" | bokeh --preview 'head -30 {}'
-# Press Ctrl-O to toggle the floating preview window
+# Preview file contents (split-screen, fzf style)
+find . -name "*.swift" | bokeh --preview 'cat {}'
+# Press Ctrl-O to toggle preview on/off
 
-# Preview with syntax highlighting (requires bat)
+# Preview with syntax highlighting (split-screen)
 find . -type f | bokeh --preview 'bat --color=always --style=numbers {}'
+
+# Floating preview window overlay
+find . -type f | bokeh --preview-float 'head -30 {}'
+# Press Ctrl-O to toggle floating window
 ```
 
 ### Preview Window
 
-bokeh supports a **floating preview window** that overlays the list when you press `Ctrl-O`:
+bokeh supports **two preview styles**:
+
+#### 1. Split-Screen Preview (`--preview`) - fzf style
+
+The default preview mode shows a split-screen layout (50/50) with a vertical separator:
 
 ```bash
-# Basic preview
+# Split-screen preview (always visible)
 find . -type f | bokeh --preview 'cat {}'
+
+# With syntax highlighting
+find . -type f | bokeh --preview 'bat --color=always --style=numbers {}'
 ```
 
-The floating window features:
-- **Clean single-line borders** (┌─┐ │ └─┘) for modern look
+**Split-screen features:**
+- **50/50 layout** - List on left, preview on right
+- **Orange vertical separator** - Clear visual boundary
+- **Always visible** - Preview updates as you navigate
+- **Keyboard scrolling** - Up/Down arrows when focused
+- **Toggle with Ctrl-O** - Hide/show preview pane
+
+**Navigation in split-screen mode:**
+- Navigate list normally with arrow keys
+- Press `Ctrl-O` to toggle preview on/off
+- When preview is visible, Up/Down scroll preview content
+- Press `Ctrl-O` again to return to list navigation
+
+#### 2. Floating Window Preview (`--preview-float`)
+
+An overlay-style preview window that appears on top of the list:
+
+```bash
+# Floating window preview
+find . -type f | bokeh --preview-float 'head -30 {}'
+```
+
+**Floating window features:**
+- **Clean single-line borders** (┌─┐ │ └─┘) in Swift orange
 - **Left-aligned title** showing the selected filename
-- **80% of screen size**, centered
+- **80% of screen size**, centered overlay
 - **Keyboard scrolling** with Up/Down arrows
 - **Toggle with Ctrl-O** - show/hide without exiting
 - **Auto-updates** as you navigate or filter
 
 **Preview controls:**
-- `Ctrl-O` - Toggle preview window on/off
+- `Ctrl-O` - Toggle floating window on/off
 - `Up` / `Down` - Scroll preview content when window is open
-- `Ctrl-O` again - Close and return to list navigation
+- Navigate list with arrow keys when window is closed
 
-The `{}` placeholder is replaced with the selected item text. You can use any shell command:
+#### Command Placeholder
+
+Both preview modes use `{}` as a placeholder for the selected item text. You can use any shell command:
 - `cat {}` - Show file contents
 - `head -50 {}` - First 50 lines
+- `bat --color=always {}` - Syntax highlighted content
 - `file {}` - File type info
 - `git log -- {}` - Git history for file
-```
 
 ## Architecture
 

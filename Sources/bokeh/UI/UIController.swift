@@ -12,11 +12,13 @@ actor UIController {
     private var lastItemCount: Int = 0
     private var isReadingStdin: Bool = true  // Cache to avoid async call in render
     private let previewCommand: String?
+    private let useFloatingPreview: Bool  // true = floating window, false = split-screen
     private var cachedPreview: String = ""  // Cache to avoid re-running preview on every render
-    private var showFloatingPreview: Bool = false  // Toggle floating preview window
+    private var showFloatingPreview: Bool = false  // Toggle floating preview window (float mode)
+    private var showSplitPreview: Bool  // Toggle split preview (split mode, starts enabled)
     private var previewScrollOffset: Int = 0  // Scroll offset for preview content
 
-    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, previewCommand: String? = nil) {
+    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, previewCommand: String? = nil, useFloatingPreview: Bool = false) {
         self.terminal = terminal
         self.matcher = matcher
         self.engine = MatchingEngine(matcher: matcher)
@@ -24,6 +26,9 @@ actor UIController {
         self.reader = reader
         self.maxHeight = maxHeight
         self.previewCommand = previewCommand
+        self.useFloatingPreview = useFloatingPreview
+        // Split preview starts enabled if we have a preview command and not using floating mode
+        self.showSplitPreview = previewCommand != nil && !useFloatingPreview
     }
 
     /// Run the main UI loop
@@ -145,7 +150,7 @@ actor UIController {
             await updatePreview()
 
         case .up:
-            if showFloatingPreview {
+            if showFloatingPreview || showSplitPreview {
                 // Scroll preview up
                 previewScrollOffset = max(0, previewScrollOffset - 1)
             } else {
@@ -154,7 +159,7 @@ actor UIController {
             }
 
         case .down:
-            if showFloatingPreview {
+            if showFloatingPreview || showSplitPreview {
                 // Scroll preview down
                 let previewLines = cachedPreview.split(separator: "\n").count
                 previewScrollOffset = min(previewLines, previewScrollOffset + 1)
@@ -167,12 +172,20 @@ actor UIController {
             state.toggleSelection()
 
         case .ctrlO:
-            // Toggle floating preview window
+            // Toggle preview window (style depends on useFloatingPreview flag)
             if previewCommand != nil {
-                showFloatingPreview.toggle()
-                if showFloatingPreview {
-                    previewScrollOffset = 0  // Reset scroll when opening
-                    await updatePreview()
+                if useFloatingPreview {
+                    showFloatingPreview.toggle()
+                    if showFloatingPreview {
+                        previewScrollOffset = 0  // Reset scroll when opening
+                        await updatePreview()
+                    }
+                } else {
+                    showSplitPreview.toggle()
+                    if showSplitPreview {
+                        previewScrollOffset = 0
+                        await updatePreview()
+                    }
                 }
             }
 
@@ -215,8 +228,22 @@ actor UIController {
         let availableRows = rows - 3  // 1 for input, 1 for status, 1 for spacing
         let displayHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
 
-        // Use full width if floating preview or no preview
-        let listWidth = cols
+        // Calculate layout based on preview mode
+        let listWidth: Int
+        let previewWidth: Int
+        let previewStartCol: Int
+
+        if showSplitPreview {
+            // Split-screen: 50/50 layout with vertical separator
+            listWidth = cols / 2 - 1
+            previewWidth = cols - listWidth - 1
+            previewStartCol = listWidth + 2
+        } else {
+            // Full width for list
+            listWidth = cols
+            previewWidth = 0
+            previewStartCol = 0
+        }
 
         // Build entire frame in a single buffer to minimize actor calls
         var buffer = ""
@@ -232,6 +259,16 @@ actor UIController {
 
         // Render status bar (positions itself)
         buffer += renderStatusBarToBuffer(row: displayHeight + 2, cols: listWidth)
+
+        // Render split preview if enabled
+        if showSplitPreview {
+            buffer += renderSplitPreview(
+                startRow: 2,
+                endRow: displayHeight + 1,
+                startCol: previewStartCol,
+                width: previewWidth
+            )
+        }
 
         // Render floating preview window if enabled
         if showFloatingPreview {
@@ -421,6 +458,43 @@ actor UIController {
         // Clear remaining lines if preview is shorter
         for row in (startRow + lines.count)..<endRow {
             buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
+        }
+
+        return buffer
+    }
+
+    /// Render split-screen preview (fzf style)
+    private func renderSplitPreview(startRow: Int, endRow: Int, startCol: Int, width: Int) -> String {
+        guard previewCommand != nil else { return "" }
+
+        var buffer = ""
+        let lines = cachedPreview.split(separator: "\n", omittingEmptySubsequences: false)
+        let maxLines = endRow - startRow + 1
+
+        // Swift orange for separator
+        let separatorColor = "\u{001B}[1;38;5;202m"
+        let resetColor = "\u{001B}[0m"
+
+        // Draw vertical separator
+        for row in startRow...endRow {
+            buffer += "\u{001B}[\(row);\(startCol - 1)H"
+            buffer += separatorColor + "│" + resetColor
+        }
+
+        // Draw preview content with scrolling support
+        for i in 0..<maxLines {
+            let row = startRow + i
+            let contentIndex = i + previewScrollOffset
+
+            buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
+
+            if contentIndex < lines.count {
+                let line = String(lines[contentIndex])
+                // Replace tabs with spaces
+                let lineWithoutTabs = line.replacingOccurrences(of: "\t", with: "    ")
+                let truncated = TextRenderer.truncate(lineWithoutTabs, width: width)
+                buffer += truncated
+            }
         }
 
         return buffer

@@ -21,8 +21,11 @@ struct Bokeh: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable case-sensitive matching")
     var caseSensitive: Bool = false
 
-    @Option(name: .long, help: "Preview command to execute for selected item. Use {} as placeholder for the item text.")
+    @Option(name: .long, help: "Preview command (split-screen style, like fzf). Use {} as placeholder.")
     var preview: String?
+
+    @Option(name: .long, help: "Preview command (floating window style). Use {} as placeholder.")
+    var previewFloat: String?
 
     mutating func run() async throws {
         // Initialize components
@@ -35,6 +38,10 @@ struct Bokeh: AsyncParsableCommand {
         // Wait briefly for initial items to load
         try? await Task.sleep(for: .milliseconds(100))
 
+        // Determine preview style
+        let previewCommand = preview ?? previewFloat
+        let useFloatingPreview = previewFloat != nil
+
         // Initialize UI components
         let terminal = RawTerminal()
         let matcher = FuzzyMatcher(caseSensitive: caseSensitive)
@@ -44,7 +51,8 @@ struct Bokeh: AsyncParsableCommand {
             cache: cache,
             reader: reader,
             maxHeight: height,
-            previewCommand: preview
+            previewCommand: previewCommand,
+            useFloatingPreview: useFloatingPreview
         )
 
         // Run UI (starts immediately, even if stdin still reading)
