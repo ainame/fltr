@@ -19,8 +19,8 @@ import Glibc
 /// This actor is designed for safe concurrent access to terminal I/O operations.
 public actor RawTerminal {
     private var originalTermios: termios?
-    private var ttyFd: Int32?
-    private let stdout: Int32 = STDOUT_FILENO
+    private var ttyFd: FileDescriptor?
+    private let stdout = FileDescriptor.standardOutput
     private var isRawMode = false
 
     public enum TerminalError: Error {
@@ -28,6 +28,7 @@ public actor RawTerminal {
         case failedToSetAttributes
         case failedToGetSize
         case failedToOpenTTY
+        case ioError(Errno)
     }
 
     public init() {}
@@ -46,15 +47,17 @@ public actor RawTerminal {
         guard !isRawMode else { return }
 
         // Open /dev/tty for keyboard input (works even when stdin is piped)
-        let fd = open("/dev/tty", O_RDWR)
-        guard fd >= 0 else {
+        let fd: FileDescriptor
+        do {
+            fd = try FileDescriptor.open("/dev/tty", .readWrite)
+        } catch {
             throw TerminalError.failedToOpenTTY
         }
         ttyFd = fd
 
         var raw = termios()
-        guard tcgetattr(fd, &raw) == 0 else {
-            close(fd)
+        guard tcgetattr(fd.rawValue, &raw) == 0 else {
+            try? fd.close()
             throw TerminalError.failedToGetAttributes
         }
 
@@ -73,8 +76,8 @@ public actor RawTerminal {
         raw.c_cc.16 = 0  // VMIN = 0
         raw.c_cc.17 = 1  // VTIME = 1 (100ms)
 
-        guard tcsetattr(fd, TCSAFLUSH, &raw) == 0 else {
-            close(fd)
+        guard tcsetattr(fd.rawValue, TCSAFLUSH, &raw) == 0 else {
+            try? fd.close()
             throw TerminalError.failedToSetAttributes
         }
 
@@ -103,8 +106,8 @@ public actor RawTerminal {
         flush()
 
         if let fd = ttyFd, var original = originalTermios {
-            tcsetattr(fd, TCSAFLUSH, &original)
-            close(fd)
+            tcsetattr(fd.rawValue, TCSAFLUSH, &original)
+            try? fd.close()
         }
 
         isRawMode = false
@@ -117,7 +120,7 @@ public actor RawTerminal {
     /// - Throws: `TerminalError.failedToGetSize` if size cannot be determined
     public func getSize() throws -> (rows: Int, cols: Int) {
         var w = winsize()
-        guard ioctl(stdout, TIOCGWINSZ, &w) == 0 else {
+        guard ioctl(stdout.rawValue, TIOCGWINSZ, &w) == 0 else {
             throw TerminalError.failedToGetSize
         }
         return (Int(w.ws_row), Int(w.ws_col))
@@ -127,13 +130,7 @@ public actor RawTerminal {
     ///
     /// - Parameter string: The string to write
     public func write(_ string: String) {
-        _ = string.withCString { ptr in
-            #if os(macOS)
-            Darwin.write(stdout, ptr, strlen(ptr))
-            #elseif os(Linux)
-            Glibc.write(stdout, ptr, strlen(ptr))
-            #endif
-        }
+        _ = try? stdout.writeAll(string.utf8)
     }
 
     /// Flushes stdout buffer.
@@ -151,12 +148,14 @@ public actor RawTerminal {
     public func readByte() -> UInt8? {
         guard let fd = ttyFd else { return nil }
         var byte: UInt8 = 0
-        #if os(macOS)
-        let result = Darwin.read(fd, &byte, 1)
-        #elseif os(Linux)
-        let result = Glibc.read(fd, &byte, 1)
-        #endif
-        return result == 1 ? byte : nil
+        do {
+            let bytesRead = try withUnsafeMutableBytes(of: &byte) { buffer in
+                try fd.read(into: buffer)
+            }
+            return bytesRead == 1 ? byte : nil
+        } catch {
+            return nil
+        }
     }
 
     /// Moves cursor to the specified position (1-indexed).
