@@ -26,22 +26,28 @@ struct Bokeh: AsyncParsableCommand {
         let cache = ItemCache()
         let reader = StdinReader(cache: cache)
 
-        // Read all input
-        try await reader.readAll()
+        // Start reading stdin in background (non-blocking!)
+        let readTask = await reader.startReading()
 
-        let itemCount = await cache.count()
-        guard itemCount > 0 else {
-            FileHandle.standardError.write(Data("Error: No items to display\n".utf8))
-            throw ExitCode.failure
-        }
+        // Wait briefly for initial items to load
+        try? await Task.sleep(for: .milliseconds(100))
 
         // Initialize UI components
         let terminal = RawTerminal()
         let matcher = FuzzyMatcher(caseSensitive: caseSensitive)
-        let ui = UIController(terminal: terminal, matcher: matcher, cache: cache, maxHeight: height)
+        let ui = UIController(
+            terminal: terminal,
+            matcher: matcher,
+            cache: cache,
+            reader: reader,
+            maxHeight: height
+        )
 
-        // Run UI
+        // Run UI (starts immediately, even if stdin still reading)
         let selectedItems = try await ui.run()
+
+        // Cancel background reading if still active
+        readTask.cancel()
 
         // Output results
         for item in selectedItems {

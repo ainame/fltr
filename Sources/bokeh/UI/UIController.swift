@@ -6,14 +6,17 @@ actor UIController {
     private let matcher: FuzzyMatcher
     private let engine: MatchingEngine
     private let cache: ItemCache
+    private let reader: StdinReader
     private var state = UIState()
     private var maxHeight: Int?  // nil = use full terminal height
+    private var lastItemCount: Int = 0
 
-    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, maxHeight: Int? = nil) {
+    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil) {
         self.terminal = terminal
         self.matcher = matcher
         self.engine = MatchingEngine(matcher: matcher)
         self.cache = cache
+        self.reader = reader
         self.maxHeight = maxHeight
     }
 
@@ -26,21 +29,44 @@ actor UIController {
             }
         }
 
-        // Initial load
-        let items = await cache.getAllItems()
-        state.totalItems = items.count
-        let initialMatches = await engine.matchItemsParallel(pattern: "", items: items)
+        // Initial load (might be empty if stdin is slow)
+        var allItems = await cache.getAllItems()
+        lastItemCount = allItems.count
+        state.totalItems = allItems.count
+        let initialMatches = await engine.matchItemsParallel(pattern: "", items: allItems)
         state.updateMatches(initialMatches)
 
         await render()
 
+        var lastRefresh = Date()
+        let refreshInterval: TimeInterval = 0.1  // Refresh every 100ms when new items arrive
+
         // Main event loop
         while !state.shouldExit {
             if let byte = await terminal.readByte() {
-                await handleKey(byte: byte, allItems: items)
+                await handleKey(byte: byte, allItems: allItems)
                 await render()
             } else {
-                // No input, sleep briefly
+                // No keyboard input - check if new items arrived
+                let currentCount = await cache.count()
+
+                if currentCount > lastItemCount {
+                    // New items arrived! Update if enough time passed
+                    let now = Date()
+                    if now.timeIntervalSince(lastRefresh) >= refreshInterval {
+                        allItems = await cache.getAllItems()
+                        lastItemCount = currentCount
+                        state.totalItems = currentCount
+
+                        // Re-run current query with new items
+                        await updateMatchesIncremental(allItems: allItems)
+                        await render()
+
+                        lastRefresh = now
+                    }
+                }
+
+                // Sleep briefly to avoid busy-waiting
                 try? await Task.sleep(for: .milliseconds(10))
             }
         }
@@ -223,6 +249,12 @@ actor UIController {
             status = "\(state.matchedItems.count)/\(state.totalItems)"
         } else {
             status = "\(state.matchedItems.count)/\(state.totalItems) (\(state.selectedItems.count) selected)"
+        }
+
+        // Show loading indicator if still reading stdin
+        let isReading = await !reader.readingComplete()
+        if isReading {
+            status += " [loading...]"
         }
 
         // Add scroll indicator if there are more items than visible

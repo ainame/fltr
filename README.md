@@ -26,6 +26,8 @@ A cross-platform fuzzy finder CLI tool written in Swift 6.2.
 - ✓ **Incremental filtering** - Only searches within previous results when query extends
 - ✓ **Hot path inlining** - @inlinable optimizations for character classification
 - ✓ **Smart threshold** - Uses parallel matching only for datasets >1000 items
+- ✓ **Streaming stdin** - UI starts immediately while still reading input (like fzf)
+- ✓ **Responsive Ctrl-C** - Can interrupt even during massive stdin operations
 
 ### Phase 3 (Future)
 
@@ -62,7 +64,13 @@ find . -type f | bokeh
 
 # Filter command history
 history | bokeh
+
+# Works great with massive datasets (streams in background)
+find / -type f 2>/dev/null | bokeh
+# UI starts immediately, even while find is still running!
 ```
+
+**Note:** bokeh streams stdin in the background, so the UI appears immediately even for huge datasets. The status bar shows `[loading...]` while input is still being read. This means you can start typing and filtering even before all items have loaded!
 
 ### Command-Line Options
 
