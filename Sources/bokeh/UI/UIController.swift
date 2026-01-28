@@ -436,6 +436,10 @@ actor UIController {
         let startRow = (rows - windowHeight) / 2
         let startCol = (cols - windowWidth) / 2
 
+        // Swift orange for borders
+        let borderColor = "\u{001B}[1;38;5;202m"
+        let resetColor = "\u{001B}[0m"
+
         var buffer = ""
         let lines = cachedPreview.split(separator: "\n", omittingEmptySubsequences: false)
 
@@ -461,7 +465,7 @@ actor UIController {
                 let titleLeftMargin = 2
                 let leftBorder = String(repeating: "─", count: titleLeftMargin)
                 let rightBorder = String(repeating: "─", count: max(0, windowWidth - title.count - titleLeftMargin - 2))
-                buffer += "┌" + leftBorder + title + rightBorder + "┐"
+                buffer += borderColor + "┌" + leftBorder + resetColor + title + borderColor + rightBorder + "┐" + resetColor
 
             } else if i == windowHeight - 1 {
                 // Bottom border with help text (centered)
@@ -469,14 +473,14 @@ actor UIController {
                 let helpLeftMargin = (windowWidth - helpText.count - 2) / 2
                 let bottomLeft = String(repeating: "─", count: max(0, helpLeftMargin))
                 let bottomRight = String(repeating: "─", count: max(0, windowWidth - helpLeftMargin - helpText.count - 2))
-                buffer += "└" + bottomLeft + helpText + bottomRight + "┘"
+                buffer += borderColor + "└" + bottomLeft + resetColor + helpText + borderColor + bottomRight + "┘" + resetColor
 
             } else {
                 // Content line with left/right borders (single line)
                 let contentWidth = windowWidth - 2
                 let contentIndex = i - 1 + previewScrollOffset  // Add scroll offset
 
-                buffer += "│"
+                buffer += borderColor + "│" + resetColor
 
                 if contentIndex < lines.count {
                     let line = String(lines[contentIndex])
@@ -489,7 +493,7 @@ actor UIController {
                     buffer += String(repeating: " ", count: contentWidth)
                 }
 
-                buffer += "│"
+                buffer += borderColor + "│" + resetColor
             }
         }
 
