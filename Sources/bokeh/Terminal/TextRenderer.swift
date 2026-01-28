@@ -113,4 +113,48 @@ struct TextRenderer {
 
         return result
     }
+
+    /// Truncate text that may contain ANSI codes, preserving the codes
+    /// This is ANSI-aware: it strips codes to calculate visual width, then truncates content
+    static func truncateWithANSI(_ text: String, width: Int) -> String {
+        // First check if stripping ANSI makes it fit
+        let stripped = stripANSI(text)
+        let visualWidth = displayWidth(stripped)
+
+        // If it fits, return as-is
+        if visualWidth <= width {
+            return text
+        }
+
+        // Need to truncate - walk through preserving ANSI codes
+        var result = ""
+        var currentWidth = 0
+        var inEscape = false
+        var escapeBuffer = ""
+
+        for char in text {
+            if char == "\u{001B}" {
+                inEscape = true
+                escapeBuffer = String(char)
+            } else if inEscape {
+                escapeBuffer.append(char)
+                if char == "m" {
+                    // End of escape sequence, add it to result
+                    result += escapeBuffer
+                    inEscape = false
+                    escapeBuffer = ""
+                }
+            } else {
+                // Regular character - check width
+                let charWidth = displayWidth(char)
+                if currentWidth + charWidth > width {
+                    break
+                }
+                result.append(char)
+                currentWidth += charWidth
+            }
+        }
+
+        return result
+    }
 }
