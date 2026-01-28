@@ -478,7 +478,7 @@ actor UIController {
                 let line = String(lines[i])
                 // Replace tabs with spaces
                 let lineWithoutTabs = line.replacingOccurrences(of: "\t", with: "    ")
-                let truncated = TextRenderer.truncateWithANSI(lineWithoutTabs, width: width)
+                let truncated = TextRenderer.truncate(lineWithoutTabs, width: width)
                 buffer += truncated
             }
         }
@@ -546,7 +546,7 @@ actor UIController {
                     let line = String(lines[contentIndex])
                     // Replace tabs with spaces to avoid width calculation issues
                     let lineWithoutTabs = line.replacingOccurrences(of: "\t", with: "    ")
-                    let truncated = TextRenderer.truncateWithANSI(lineWithoutTabs, width: contentWidth)
+                    let truncated = TextRenderer.truncate(lineWithoutTabs, width: contentWidth)
                     // Use padWithoutANSI which handles ANSI codes + emoji/CJK display width
                     buffer += TextRenderer.padWithoutANSI(truncated, width: contentWidth)
                 } else {
