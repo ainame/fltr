@@ -156,14 +156,13 @@ find . -type f | bokeh --preview 'bat --color=always --style=numbers {}'
 - **50/50 layout** - List on left, preview on right
 - **Orange vertical separator** - Clear visual boundary
 - **Always visible** - Preview updates as you navigate
-- **Keyboard scrolling** - Up/Down arrows when focused
+- **Auto-updates** - Preview refreshes when you select different items
 - **Toggle with Ctrl-O** - Hide/show preview pane
 
 **Navigation in split-screen mode:**
-- Navigate list normally with arrow keys
-- Press `Ctrl-O` to toggle preview on/off
-- When preview is visible, Up/Down scroll preview content
-- Press `Ctrl-O` again to return to list navigation
+- Use arrow keys to navigate the item list
+- Preview automatically updates to show the selected item
+- Press `Ctrl-O` to toggle preview pane on/off
 
 #### 2. Floating Window Preview (`--preview-float`)
 
@@ -178,14 +177,12 @@ find . -type f | bokeh --preview-float 'head -30 {}'
 - **Clean single-line borders** (┌─┐ │ └─┘) in Swift orange
 - **Left-aligned title** showing the selected filename
 - **80% of screen size**, centered overlay
-- **Keyboard scrolling** with Up/Down arrows
 - **Toggle with Ctrl-O** - show/hide without exiting
-- **Auto-updates** as you navigate or filter
+- **Auto-updates** as you navigate through items
 
 **Preview controls:**
 - `Ctrl-O` - Toggle floating window on/off
-- `Up` / `Down` - Scroll preview content when window is open
-- Navigate list with arrow keys when window is closed
+- `Up` / `Down` - Navigate through items (preview updates automatically)
 
 #### Command Placeholder
 

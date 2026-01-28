@@ -150,23 +150,12 @@ actor UIController {
             await updatePreview()
 
         case .up:
-            if showFloatingPreview || showSplitPreview {
-                // Scroll preview up
-                previewScrollOffset = max(0, previewScrollOffset - 1)
-            } else {
-                state.moveUp(visibleHeight: visibleHeight)
-                await updatePreview()
-            }
+            state.moveUp(visibleHeight: visibleHeight)
+            await updatePreview()
 
         case .down:
-            if showFloatingPreview || showSplitPreview {
-                // Scroll preview down
-                let previewLines = cachedPreview.split(separator: "\n").count
-                previewScrollOffset = min(previewLines, previewScrollOffset + 1)
-            } else {
-                state.moveDown(visibleHeight: visibleHeight)
-                await updatePreview()
-            }
+            state.moveDown(visibleHeight: visibleHeight)
+            await updatePreview()
 
         case .tab:
             state.toggleSelection()
@@ -177,13 +166,11 @@ actor UIController {
                 if useFloatingPreview {
                     showFloatingPreview.toggle()
                     if showFloatingPreview {
-                        previewScrollOffset = 0  // Reset scroll when opening
                         await updatePreview()
                     }
                 } else {
                     showSplitPreview.toggle()
                     if showSplitPreview {
-                        previewScrollOffset = 0
                         await updatePreview()
                     }
                 }
@@ -481,15 +468,14 @@ actor UIController {
             buffer += separatorColor + "│" + resetColor
         }
 
-        // Draw preview content with scrolling support
+        // Draw preview content
         for i in 0..<maxLines {
             let row = startRow + i
-            let contentIndex = i + previewScrollOffset
 
             buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
 
-            if contentIndex < lines.count {
-                let line = String(lines[contentIndex])
+            if i < lines.count {
+                let line = String(lines[i])
                 // Replace tabs with spaces
                 let lineWithoutTabs = line.replacingOccurrences(of: "\t", with: "    ")
                 let truncated = TextRenderer.truncate(lineWithoutTabs, width: width)
@@ -543,7 +529,7 @@ actor UIController {
 
             } else if i == windowHeight - 1 {
                 // Bottom border with help text (centered)
-                let helpText = " ↑/↓ to scroll · Ctrl-O to close "
+                let helpText = " Ctrl-O to close "
                 let helpLeftMargin = (windowWidth - helpText.count - 2) / 2
                 let bottomLeft = String(repeating: "─", count: max(0, helpLeftMargin))
                 let bottomRight = String(repeating: "─", count: max(0, windowWidth - helpLeftMargin - helpText.count - 2))
@@ -552,7 +538,7 @@ actor UIController {
             } else {
                 // Content line with left/right borders (single line)
                 let contentWidth = windowWidth - 2
-                let contentIndex = i - 1 + previewScrollOffset  // Add scroll offset
+                let contentIndex = i - 1
 
                 buffer += borderColor + "│" + resetColor
 
