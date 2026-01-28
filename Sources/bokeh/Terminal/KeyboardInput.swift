@@ -59,10 +59,20 @@ struct KeyboardInput {
         case 21:  // Ctrl-U
             return .ctrlU
 
+        case 16:  // Ctrl-P (previous/up)
+            return .up
+
+        case 14:  // Ctrl-N (next/down)
+            return .down
+
         case 32...126:  // Printable ASCII
             return .char(Character(UnicodeScalar(firstByte)))
 
         default:
+            // Non-printable control characters should be ignored
+            if firstByte < 32 {
+                return .unknown
+            }
             // Try to interpret as UTF-8
             let scalar = UnicodeScalar(firstByte)
             return .char(Character(scalar))
