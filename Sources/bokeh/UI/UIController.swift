@@ -10,6 +10,7 @@ actor UIController {
     private var state = UIState()
     private var maxHeight: Int?  // nil = use full terminal height
     private var lastItemCount: Int = 0
+    private var isReadingStdin: Bool = true  // Cache to avoid async call in render
 
     init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil) {
         self.terminal = terminal
@@ -43,6 +44,9 @@ actor UIController {
 
         // Main event loop
         while !state.shouldExit {
+            // Update reading status cache
+            isReadingStdin = await !reader.readingComplete()
+
             if let byte = await terminal.readByte() {
                 await handleKey(byte: byte, allItems: allItems)
                 await render()
@@ -179,48 +183,50 @@ actor UIController {
         let availableRows = rows - 3  // 1 for input, 1 for status, 1 for spacing
         let displayHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
 
-        // Clear screen
-        await terminal.moveCursor(row: 1, col: 1)
-        await terminal.clearToEnd()
+        // Build entire frame in a single buffer to minimize actor calls
+        var buffer = ""
+
+        // Clear screen and reset cursor
+        buffer += "\u{001B}[H\u{001B}[J"  // Home cursor + clear to end
 
         // Render input line
-        await renderInputLine(cols: cols)
+        buffer += renderInputLineToBuffer(cols: cols)
 
         // Render matched items
-        await renderItemList(displayHeight: displayHeight, cols: cols)
+        buffer += renderItemListToBuffer(displayHeight: displayHeight, cols: cols)
 
         // Render status bar
-        await renderStatusBar(row: displayHeight + 2, cols: cols)
+        buffer += renderStatusBarToBuffer(row: displayHeight + 2, cols: cols)
 
+        // Single write for entire frame
+        await terminal.write(buffer)
         await terminal.flush()
     }
 
-    private func renderInputLine(cols: Int) async {
-        await terminal.moveCursor(row: 1, col: 1)
+    private func renderInputLineToBuffer(cols: Int) -> String {
         let prompt = "> "
         let displayQuery = TextRenderer.truncate(state.query, width: cols - prompt.count - 1)
-        await terminal.write(prompt + displayQuery)
+        return prompt + displayQuery + "\n"
     }
 
-    private func renderItemList(displayHeight: Int, cols: Int) async {
+    private func renderItemListToBuffer(displayHeight: Int, cols: Int) -> String {
+        // Pre-define ANSI codes to avoid repeated string allocations
+        let swiftOrange = "\u{001B}[1;38;5;202m"
+        let resetFg = "\u{001B}[22;39m"
+        let bgColor = "\u{001B}[48;5;236m"
+        let resetAll = "\u{001B}[0m"
+
         // Get visible slice of matched items based on scrollOffset
         let startIndex = state.scrollOffset
         let endIndex = min(startIndex + displayHeight, state.matchedItems.count)
         let visibleItems = Array(state.matchedItems[startIndex..<endIndex])
 
+        var buffer = ""
         for (displayIndex, matchedItem) in visibleItems.enumerated() {
-            let row = displayIndex + 2
             let actualIndex = startIndex + displayIndex
-
-            await terminal.moveCursor(row: row, col: 1)
-            await terminal.clearLine()
 
             let isSelected = state.selectedIndex == actualIndex
             let isMarked = state.selectedItems.contains(matchedItem.item.index)
-
-            // Swift logo orange color (ANSI 202) with bold, like fzf's cursor
-            let swiftOrange = "\u{001B}[1;38;5;202m"
-            let resetFg = "\u{001B}[22;39m"  // Reset bold and foreground, keep background
 
             var prefix = "  "
             if isMarked {
@@ -228,41 +234,37 @@ actor UIController {
             }
             if isSelected {
                 if isMarked {
-                    // Both selected and marked: show cursor after marker
                     prefix = "\(swiftOrange)>>\(resetFg)"
                 } else {
-                    // Just selected: show cursor
                     prefix = " \(swiftOrange)>\(resetFg)"
                 }
             }
 
-            // Apply background color for selected line (like fzf)
-            let bgStart = isSelected ? "\u{001B}[48;5;236m" : ""
-            let bgEnd = isSelected ? "\u{001B}[0m" : ""
+            // Apply background color for selected line
+            let bgStart = isSelected ? bgColor : ""
+            let bgEnd = isSelected ? resetAll : ""
 
             let text = matchedItem.item.text
-            // Calculate visual width of prefix (without ANSI codes, always 2 chars)
             let prefixVisualWidth = 2
             let availableWidth = cols - prefixVisualWidth - 1
-            // Use the new ANSI-safe truncate and highlight
+
+            // Truncate and highlight
             let displayText = TextRenderer.truncateAndHighlight(
                 text,
                 positions: matchedItem.matchResult.positions,
                 width: availableWidth
             )
 
-            // Pad line to full width so background extends across entire line
+            // Pad line to full width
             let content = prefix + displayText
             let paddedLine = TextRenderer.padWithoutANSI(content, width: cols - 1)
-            let line = bgStart + paddedLine + bgEnd
-            await terminal.write(line)
+            buffer += bgStart + paddedLine + bgEnd + "\n"
         }
+
+        return buffer
     }
 
-    private func renderStatusBar(row: Int, cols: Int) async {
-        await terminal.moveCursor(row: row, col: 1)
-        await terminal.clearLine()
-
+    private func renderStatusBarToBuffer(row: Int, cols: Int) -> String {
         var status: String
         if state.selectedItems.isEmpty {
             status = "\(state.matchedItems.count)/\(state.totalItems)"
@@ -270,22 +272,19 @@ actor UIController {
             status = "\(state.matchedItems.count)/\(state.totalItems) (\(state.selectedItems.count) selected)"
         }
 
-        // Show loading indicator if still reading stdin
-        let isReading = await !reader.readingComplete()
-        if isReading {
+        // Show loading indicator if still reading stdin (cached value, no async)
+        if isReadingStdin {
             status += " [loading...]"
         }
 
         // Add scroll indicator if there are more items than visible
-        let (rows, _) = (try? await terminal.getSize()) ?? (24, 80)
-        let availableRows = rows - 3
-        let displayHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
+        let displayHeight = maxHeight ?? row - 2  // Approximate from row parameter
 
         if state.matchedItems.count > displayHeight {
             let scrollPercent = Int((Double(state.scrollOffset) / Double(max(1, state.matchedItems.count - displayHeight))) * 100)
             status += " [\(scrollPercent)%]"
         }
 
-        await terminal.write(TextRenderer.pad(status, width: cols))
+        return TextRenderer.pad(status, width: cols)
     }
 }
