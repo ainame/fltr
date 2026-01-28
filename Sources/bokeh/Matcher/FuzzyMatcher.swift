@@ -11,8 +11,8 @@ struct FuzzyMatcher: Sendable {
     /// Match a pattern against text
     /// Supports space-separated tokens as AND operator (all tokens must match)
     func match(pattern: String, text: String) -> MatchResult? {
-        // Split pattern by whitespace for AND matching
-        let tokens = pattern.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        // Split pattern by whitespace for AND matching (optimized to avoid intermediate allocations)
+        let tokens = pattern.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
 
         guard !tokens.isEmpty else {
             return MatchResult(score: 0, positions: [])
@@ -36,8 +36,20 @@ struct FuzzyMatcher: Sendable {
             allPositions.append(contentsOf: result.positions)
         }
 
-        // Remove duplicate positions and sort
-        allPositions = Array(Set(allPositions)).sorted()
+        // Remove duplicate positions and sort (optimized: sort then deduplicate in-place)
+        if !allPositions.isEmpty {
+            allPositions.sort()
+            var writeIndex = 1
+            for readIndex in 1..<allPositions.count {
+                if allPositions[readIndex] != allPositions[readIndex - 1] {
+                    if writeIndex != readIndex {
+                        allPositions[writeIndex] = allPositions[readIndex]
+                    }
+                    writeIndex += 1
+                }
+            }
+            allPositions.removeLast(allPositions.count - writeIndex)
+        }
 
         return MatchResult(score: totalScore, positions: allPositions)
     }

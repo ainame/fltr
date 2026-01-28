@@ -10,13 +10,15 @@ enum CharClass: Sendable {
     case letter
     case number
 
+    // Static delimiter set to avoid repeated allocations
+    private static let delimiters: Set<Character> = ["_", "-", "/", "\\", ".", ":", " ", "\t"]
+
     @inlinable
     static func classify(_ char: Character) -> CharClass {
         if char.isWhitespace {
             return .whitespace
         }
 
-        let delimiters: Set<Character> = ["_", "-", "/", "\\", ".", ":", " ", "\t"]
         if delimiters.contains(char) {
             return .delimiter
         }
