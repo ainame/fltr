@@ -430,7 +430,11 @@ actor UIController {
         let itemName = !state.matchedItems.isEmpty
             ? state.matchedItems[state.selectedIndex].item.text
             : ""
-        let title = " Preview: \(itemName) "
+        // Replace tabs and truncate title to avoid width issues
+        let sanitizedName = itemName.replacingOccurrences(of: "\t", with: " ")
+        let maxTitleLength = windowWidth - 14  // Leave room for " Preview: " and borders
+        let truncatedName = TextRenderer.truncate(sanitizedName, width: maxTitleLength)
+        let title = " Preview: \(truncatedName) "
 
         // Clear and draw each line of the window
         for i in 0..<windowHeight {
@@ -441,6 +445,7 @@ actor UIController {
 
             if i == 0 {
                 // Top border with title
+                // Use character count for simple ASCII, good enough for title
                 let titleStart = (windowWidth - title.count - 2) / 2
                 let leftBorder = String(repeating: "═", count: max(0, titleStart))
                 let rightBorder = String(repeating: "═", count: max(0, windowWidth - titleStart - title.count - 2))
@@ -462,7 +467,9 @@ actor UIController {
 
                 if contentIndex < lines.count {
                     let line = String(lines[contentIndex])
-                    let truncated = TextRenderer.truncate(line, width: contentWidth)
+                    // Replace tabs with spaces to avoid width calculation issues
+                    let lineWithoutTabs = line.replacingOccurrences(of: "\t", with: "    ")
+                    let truncated = TextRenderer.truncate(lineWithoutTabs, width: contentWidth)
                     buffer += truncated.padding(toLength: contentWidth, withPad: " ", startingAt: 0)
                 } else {
                     buffer += String(repeating: " ", count: contentWidth)
