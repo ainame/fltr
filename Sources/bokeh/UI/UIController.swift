@@ -18,14 +18,16 @@ actor UIController {
     private var showFloatingPreview: Bool = false  // Toggle floating preview window (float mode)
     private var showSplitPreview: Bool  // Toggle split preview (split mode, starts enabled)
     private var previewScrollOffset: Int = 0  // Scroll offset for preview content
+    private let multiSelect: Bool  // Whether Tab selection is enabled
 
-    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, previewCommand: String? = nil, useFloatingPreview: Bool = false) {
+    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false) {
         self.terminal = terminal
         self.matcher = matcher
         self.engine = MatchingEngine(matcher: matcher)
         self.cache = cache
         self.reader = reader
         self.maxHeight = maxHeight
+        self.multiSelect = multiSelect
         self.previewCommand = previewCommand
         self.useFloatingPreview = useFloatingPreview
         // Split preview starts enabled if we have a preview command and not using floating mode
@@ -158,7 +160,9 @@ actor UIController {
             await updatePreview()
 
         case .tab:
-            state.toggleSelection()
+            if multiSelect {
+                state.toggleSelection()
+            }
 
         case .ctrlO:
             // Toggle preview window (style depends on useFloatingPreview flag)

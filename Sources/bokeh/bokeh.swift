@@ -52,6 +52,7 @@ struct Bokeh: AsyncParsableCommand {
             cache: cache,
             reader: reader,
             maxHeight: height,
+            multiSelect: multi,
             previewCommand: previewCommand,
             useFloatingPreview: useFloatingPreview
         )
