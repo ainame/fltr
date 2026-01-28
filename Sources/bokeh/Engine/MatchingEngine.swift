@@ -17,9 +17,11 @@ actor MatchingEngine {
             return items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: [])) }
         }
 
-        // Small dataset - use single-threaded
+        // Small dataset - use single-threaded with buffer reuse
         if items.count < parallelThreshold {
-            return matcher.matchItems(pattern: pattern, items: items)
+            return FuzzyMatchV2.$matrixBuffer.withValue(FuzzyMatchV2.MatrixBuffer()) {
+                matcher.matchItems(pattern: pattern, items: items)
+            }
         }
 
         // Parallel matching for large datasets
@@ -30,14 +32,16 @@ actor MatchingEngine {
             // Partition items and dispatch to task group
             for partition in items.chunked(into: partitionSize) {
                 group.addTask {
-                    // Each task runs matcher independently
-                    var matched: [MatchedItem] = []
-                    for item in partition {
-                        if let result = self.matcher.match(pattern: pattern, text: item.text) {
-                            matched.append(MatchedItem(item: item, matchResult: result))
+                    // Each task gets its own matrix buffer for reuse
+                    return FuzzyMatchV2.$matrixBuffer.withValue(FuzzyMatchV2.MatrixBuffer()) {
+                        var matched: [MatchedItem] = []
+                        for item in partition {
+                            if let result = self.matcher.match(pattern: pattern, text: item.text) {
+                                matched.append(MatchedItem(item: item, matchResult: result))
+                            }
                         }
+                        return matched
                     }
-                    return matched
                 }
             }
 

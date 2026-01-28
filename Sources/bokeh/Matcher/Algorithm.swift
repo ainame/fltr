@@ -10,6 +10,42 @@ struct FuzzyMatchV2: Sendable {
     static let bonusConsecutive = 4
     static let bonusFirstCharMultiplier = 2
 
+    /// Reusable matrix buffer to avoid repeated allocations
+    /// Each task gets its own buffer via TaskLocal storage
+    final class MatrixBuffer: @unchecked Sendable {
+        var H: [[Int]] = []
+        var lastMatch: [[Int]] = []
+
+        func resize(patternLen: Int, textLen: Int) {
+            let neededRows = patternLen + 1
+            let neededCols = textLen + 1
+
+            // Grow rows if needed
+            if H.count < neededRows {
+                H = Array(repeating: Array(repeating: 0, count: neededCols), count: neededRows)
+                lastMatch = Array(repeating: Array(repeating: 0, count: neededCols), count: neededRows)
+            } else {
+                // Grow columns if needed
+                if H[0].count < neededCols {
+                    H = Array(repeating: Array(repeating: 0, count: neededCols), count: neededRows)
+                    lastMatch = Array(repeating: Array(repeating: 0, count: neededCols), count: neededRows)
+                }
+            }
+        }
+
+        func clear(patternLen: Int, textLen: Int) {
+            // Reset values for reuse
+            for i in 0...patternLen {
+                for j in 0...textLen {
+                    H[i][j] = Int.min / 2
+                    lastMatch[i][j] = -1
+                }
+            }
+        }
+    }
+
+    @TaskLocal static var matrixBuffer: MatrixBuffer?
+
     /// Main matching function
     static func match(pattern: String, text: String, caseSensitive: Bool = false) -> MatchResult? {
         guard !pattern.isEmpty else {
@@ -30,13 +66,14 @@ struct FuzzyMatchV2: Sendable {
         let patternLen = patternChars.count
         let textLen = textChars.count
 
-        // DP matrices: H[i][j] = best score ending at text[j] with pattern[i]
-        var H = Array(repeating: Array(repeating: Int.min / 2, count: textLen + 1), count: patternLen + 1)
-        var lastMatch = Array(repeating: Array(repeating: -1, count: textLen + 1), count: patternLen + 1)
+        // Get or create matrix buffer (reuses allocations across matches)
+        let buffer = matrixBuffer ?? MatrixBuffer()
+        buffer.resize(patternLen: patternLen, textLen: textLen)
+        buffer.clear(patternLen: patternLen, textLen: textLen)
 
         // Initialize: empty pattern matches with score 0
         for j in 0...textLen {
-            H[0][j] = 0
+            buffer.H[0][j] = 0
         }
 
         // Fill DP table
@@ -52,15 +89,15 @@ struct FuzzyMatchV2: Sendable {
                     }
 
                     // Check for consecutive match
-                    let consecutiveBonus = (lastMatch[i - 1][j - 1] == j - 2) ? bonusConsecutive : 0
+                    let consecutiveBonus = (buffer.lastMatch[i - 1][j - 1] == j - 2) ? bonusConsecutive : 0
 
-                    let matchScore = H[i - 1][j - 1] + scoreMatch + bonus + consecutiveBonus
-                    H[i][j] = matchScore
-                    lastMatch[i][j] = j - 1
+                    let matchScore = buffer.H[i - 1][j - 1] + scoreMatch + bonus + consecutiveBonus
+                    buffer.H[i][j] = matchScore
+                    buffer.lastMatch[i][j] = j - 1
                 } else {
                     // Gap: carry forward best score from left
-                    H[i][j] = H[i][j - 1] + scoreGapExtension
-                    lastMatch[i][j] = lastMatch[i][j - 1]
+                    buffer.H[i][j] = buffer.H[i][j - 1] + scoreGapExtension
+                    buffer.lastMatch[i][j] = buffer.lastMatch[i][j - 1]
                 }
             }
         }
@@ -69,8 +106,8 @@ struct FuzzyMatchV2: Sendable {
         var bestScore = Int.min
         var bestCol = -1
         for j in patternLen...textLen {
-            if H[patternLen][j] > bestScore {
-                bestScore = H[patternLen][j]
+            if buffer.H[patternLen][j] > bestScore {
+                bestScore = buffer.H[patternLen][j]
                 bestCol = j
             }
         }
@@ -80,7 +117,7 @@ struct FuzzyMatchV2: Sendable {
         }
 
         // Backtrack to find match positions
-        let positions = backtrack(H: H, lastMatch: lastMatch, patternLen: patternLen, endCol: bestCol)
+        let positions = backtrack(H: buffer.H, lastMatch: buffer.lastMatch, patternLen: patternLen, endCol: bestCol)
 
         return MatchResult(score: bestScore, positions: positions)
     }
