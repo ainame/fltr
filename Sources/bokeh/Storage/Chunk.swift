@@ -2,26 +2,32 @@ import Collections
 
 /// Fixed-size chunk for efficient storage
 /// Based on fzf's chunk design (100 items per chunk)
+///
+/// Uses InlineArray (SE-0483) for zero heap allocation
+/// Benefits: No heap allocation, better cache locality, no ARC overhead
 struct Chunk: Sendable {
     static let capacity = 100
-    private(set) var items: [Item]
+    private var storage: [100 of Item]
+    private(set) var count: Int = 0
 
     init() {
-        self.items = []
-        self.items.reserveCapacity(Self.capacity)
+        let dummy = Item(index: -1, text: "")
+        self.storage = .init(repeating: dummy)
     }
 
     var isFull: Bool {
-        items.count >= Self.capacity
+        count >= Self.capacity
     }
 
-    var count: Int {
-        items.count
+    var items: [Item] {
+        // Only return valid items (0..<count)
+        (0..<count).map { storage[$0] }
     }
 
     mutating func append(_ item: Item) -> Bool {
         guard !isFull else { return false }
-        items.append(item)
+        storage[count] = item
+        count += 1
         return true
     }
 }

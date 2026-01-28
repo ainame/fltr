@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "bokeh",
     platforms: [
-        .macOS(.v14),
+        .macOS(.v26),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
