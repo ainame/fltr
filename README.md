@@ -138,11 +138,17 @@ find . -type f | bokeh --preview 'cat {}'
 ```
 
 The floating window features:
-- **Bordered box** with title showing the selected item
+- **Clean single-line borders** (┌─┐ │ └─┘) for modern look
+- **Left-aligned title** showing the selected filename
 - **80% of screen size**, centered
-- **Shadow effect** for depth
+- **Keyboard scrolling** with Up/Down arrows
 - **Toggle with Ctrl-O** - show/hide without exiting
 - **Auto-updates** as you navigate or filter
+
+**Preview controls:**
+- `Ctrl-O` - Toggle preview window on/off
+- `Up` / `Down` - Scroll preview content when window is open
+- `Ctrl-O` again - Close and return to list navigation
 
 The `{}` placeholder is replaced with the selected item text. You can use any shell command:
 - `cat {}` - Show file contents
