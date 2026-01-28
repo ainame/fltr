@@ -1,7 +1,13 @@
 import Foundation
 
-/// Keyboard input handling
-enum Key: Equatable, Sendable {
+/// Keyboard input parsing for terminal applications.
+///
+/// Converts raw byte sequences into structured key events, handling:
+/// - ASCII characters
+/// - Control keys (Ctrl-C, Ctrl-D, etc.)
+/// - Arrow keys and escape sequences
+/// - Special keys (Tab, Enter, Backspace, etc.)
+public enum Key: Equatable, Sendable {
     case char(Character)
     case backspace
     case delete
@@ -20,9 +26,14 @@ enum Key: Equatable, Sendable {
 }
 
 /// Parse key input from raw bytes
-struct KeyboardInput {
-    /// Parse escape sequence or regular key
-    static func parseKey(firstByte: UInt8, readNext: () -> UInt8?) -> Key {
+public struct KeyboardInput {
+    /// Parses a key from raw byte input.
+    ///
+    /// - Parameters:
+    ///   - firstByte: The first byte of input
+    ///   - readNext: Closure to read additional bytes for escape sequences
+    /// - Returns: The parsed Key value
+    public static func parseKey(firstByte: UInt8, readNext: () -> UInt8?) -> Key {
         switch firstByte {
         case 27:  // ESC
             // Check if there's a follow-up byte for escape sequences

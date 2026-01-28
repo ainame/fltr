@@ -7,22 +7,42 @@ import Darwin
 import Glibc
 #endif
 
-/// Terminal control using raw mode
-actor RawTerminal {
+/// SwiftTUI - A Swift Terminal User Interface library
+///
+/// `RawTerminal` provides low-level terminal control functionality including:
+/// - Raw mode activation/deactivation
+/// - Alternate screen buffer management
+/// - Cursor control and positioning
+/// - Terminal size detection
+/// - Non-blocking byte reading
+///
+/// This actor is designed for safe concurrent access to terminal I/O operations.
+public actor RawTerminal {
     private var originalTermios: termios?
     private var ttyFd: Int32?
     private let stdout: Int32 = STDOUT_FILENO
     private var isRawMode = false
 
-    enum TerminalError: Error {
+    public enum TerminalError: Error {
         case failedToGetAttributes
         case failedToSetAttributes
         case failedToGetSize
         case failedToOpenTTY
     }
 
-    /// Enter raw mode and alternate screen
-    func enterRawMode() throws {
+    public init() {}
+
+    /// Enters raw terminal mode and activates the alternate screen buffer.
+    ///
+    /// Raw mode disables canonical input processing and echo, allowing character-by-character
+    /// input reading. The alternate screen buffer preserves the original terminal content.
+    ///
+    /// - Throws: `TerminalError.failedToOpenTTY` if /dev/tty cannot be opened
+    ///           `TerminalError.failedToGetAttributes` if terminal attributes cannot be read
+    ///           `TerminalError.failedToSetAttributes` if raw mode cannot be activated
+    ///
+    /// - Note: Always call `exitRawMode()` to restore terminal state, preferably in a defer block
+    public func enterRawMode() throws {
         guard !isRawMode else { return }
 
         // Open /dev/tty for keyboard input (works even when stdin is piped)
@@ -69,8 +89,11 @@ actor RawTerminal {
         isRawMode = true
     }
 
-    /// Exit raw mode and restore terminal
-    func exitRawMode() {
+    /// Exits raw mode and restores original terminal state.
+    ///
+    /// Restores the terminal to its original state before entering raw mode,
+    /// exits the alternate screen buffer, and shows the cursor.
+    public func exitRawMode() {
         guard isRawMode else { return }
 
         // Show cursor
@@ -88,8 +111,11 @@ actor RawTerminal {
         ttyFd = nil
     }
 
-    /// Get terminal size
-    func getSize() throws -> (rows: Int, cols: Int) {
+    /// Gets the current terminal size.
+    ///
+    /// - Returns: A tuple containing (rows, cols) of the terminal
+    /// - Throws: `TerminalError.failedToGetSize` if size cannot be determined
+    public func getSize() throws -> (rows: Int, cols: Int) {
         var w = winsize()
         guard ioctl(stdout, TIOCGWINSZ, &w) == 0 else {
             throw TerminalError.failedToGetSize
@@ -97,38 +123,46 @@ actor RawTerminal {
         return (Int(w.ws_row), Int(w.ws_col))
     }
 
-    /// Write string to stdout
-    func write(_ string: String) {
+    /// Writes a string to stdout.
+    ///
+    /// - Parameter string: The string to write
+    public func write(_ string: String) {
         _ = string.withCString { ptr in
             Darwin.write(stdout, ptr, strlen(ptr))
         }
     }
 
-    /// Flush stdout
-    func flush() {
+    /// Flushes stdout buffer.
+    public func flush() {
         fflush(__stdoutp)
     }
 
-    /// Read single byte (non-blocking)
-    func readByte() -> UInt8? {
+    /// Reads a single byte from terminal input (non-blocking).
+    ///
+    /// - Returns: The byte read, or nil if no input is available
+    public func readByte() -> UInt8? {
         guard let fd = ttyFd else { return nil }
         var byte: UInt8 = 0
         let result = Darwin.read(fd, &byte, 1)
         return result == 1 ? byte : nil
     }
 
-    /// Move cursor to position (1-indexed)
-    func moveCursor(row: Int, col: Int) {
+    /// Moves cursor to the specified position (1-indexed).
+    ///
+    /// - Parameters:
+    ///   - row: Row number (1-based)
+    ///   - col: Column number (1-based)
+    public func moveCursor(row: Int, col: Int) {
         write("\u{001B}[\(row);\(col)H")
     }
 
-    /// Clear from cursor to end of screen
-    func clearToEnd() {
+    /// Clears from cursor to end of screen.
+    public func clearToEnd() {
         write("\u{001B}[J")
     }
 
-    /// Clear current line
-    func clearLine() {
+    /// Clears the current line.
+    public func clearLine() {
         write("\u{001B}[2K")
     }
 

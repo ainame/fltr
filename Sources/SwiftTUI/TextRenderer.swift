@@ -1,13 +1,25 @@
 import Foundation
 import DisplayWidth
 
-/// Text rendering utilities for terminal
-struct TextRenderer {
+/// Text rendering utilities for terminal display.
+///
+/// Provides Unicode-aware text manipulation for terminal UIs:
+/// - Display width calculation (CJK, emoji, grapheme clusters)
+/// - ANSI escape sequence preservation
+/// - Text truncation and padding
+/// - Syntax highlighting support
+public struct TextRenderer {
     private static let displayWidth = DisplayWidth()
 
-    /// Truncate text to fit width, considering Unicode display width and ANSI codes
-    /// ANSI escape sequences are preserved and don't count toward visual width
-    static func truncate(_ text: String, width: Int) -> String {
+    /// Truncates text to fit specified width, considering Unicode display width and ANSI codes.
+    ///
+    /// ANSI escape sequences are preserved and don't count toward visual width.
+    ///
+    /// - Parameters:
+    ///   - text: The text to truncate
+    ///   - width: Maximum visual width
+    /// - Returns: Truncated text with ANSI codes preserved
+    public static func truncate(_ text: String, width: Int) -> String {
         // First check if stripping ANSI makes it fit
         let stripped = stripANSI(text)
         let visualWidth = displayWidth(stripped)
@@ -49,8 +61,13 @@ struct TextRenderer {
         return result
     }
 
-    /// Pad text to exact width with spaces
-    static func pad(_ text: String, width: Int) -> String {
+    /// Pads text to exact width with spaces.
+    ///
+    /// - Parameters:
+    ///   - text: The text to pad
+    ///   - width: Target visual width
+    /// - Returns: Padded text
+    public static func pad(_ text: String, width: Int) -> String {
         let currentWidth = displayWidth(text)
         if currentWidth >= width {
             return truncate(text, width: width)
@@ -60,8 +77,13 @@ struct TextRenderer {
         return text + padding
     }
 
-    /// Highlight matched positions in text
-    static func highlight(_ text: String, positions: [Int]) -> String {
+    /// Highlights matched positions in text with ANSI color codes.
+    ///
+    /// - Parameters:
+    ///   - text: The text to highlight
+    ///   - positions: Character positions to highlight
+    /// - Returns: Text with highlighted characters
+    public static func highlight(_ text: String, positions: [Int]) -> String {
         guard !positions.isEmpty else { return text }
 
         var result = ""
@@ -80,9 +102,16 @@ struct TextRenderer {
         return result
     }
 
-    /// Truncate text and then apply highlighting (ANSI-safe)
-    /// This ensures ANSI escape sequences don't break width calculation
-    static func truncateAndHighlight(_ text: String, positions: [Int], width: Int) -> String {
+    /// Truncates text and then applies highlighting (ANSI-safe).
+    ///
+    /// This ensures ANSI escape sequences don't break width calculation.
+    ///
+    /// - Parameters:
+    ///   - text: The text to process
+    ///   - positions: Character positions to highlight
+    ///   - width: Maximum visual width
+    /// - Returns: Truncated and highlighted text
+    public static func truncateAndHighlight(_ text: String, positions: [Int], width: Int) -> String {
         // First truncate to fit width
         var currentWidth = 0
         var truncatedLength = 0
@@ -106,9 +135,15 @@ struct TextRenderer {
         return highlight(truncatedText, positions: validPositions)
     }
 
-    /// Pad text that may contain ANSI codes to exact width
-    /// Strips ANSI codes to calculate visual width, then pads with spaces
-    static func padWithoutANSI(_ text: String, width: Int) -> String {
+    /// Pads text that may contain ANSI codes to exact width.
+    ///
+    /// Strips ANSI codes to calculate visual width, then pads with spaces.
+    ///
+    /// - Parameters:
+    ///   - text: The text to pad (may contain ANSI codes)
+    ///   - width: Target visual width
+    /// - Returns: Padded text with ANSI codes preserved
+    public static func padWithoutANSI(_ text: String, width: Int) -> String {
         // Strip ANSI codes to calculate actual display width
         let stripped = stripANSI(text)
         let currentWidth = displayWidth(stripped)

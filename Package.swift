@@ -14,9 +14,20 @@ let package = Package(
         .package(url: "https://github.com/ainame/swift-displaywidth", branch: "main"),
     ],
     targets: [
+        // SwiftTUI - Reusable terminal UI library
+        .target(
+            name: "SwiftTUI",
+            dependencies: [
+                .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "DisplayWidth", package: "swift-displaywidth"),
+            ]
+        ),
+
+        // bokeh - Fuzzy finder executable
         .executableTarget(
             name: "bokeh",
             dependencies: [
+                "SwiftTUI",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
@@ -24,6 +35,8 @@ let package = Package(
                 .product(name: "DisplayWidth", package: "swift-displaywidth"),
             ]
         ),
+
+        // Tests
         .testTarget(
             name: "bokehTests",
             dependencies: ["bokeh"]
