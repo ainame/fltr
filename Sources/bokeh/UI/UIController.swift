@@ -483,7 +483,8 @@ actor UIController {
                     // Replace tabs with spaces to avoid width calculation issues
                     let lineWithoutTabs = line.replacingOccurrences(of: "\t", with: "    ")
                     let truncated = TextRenderer.truncate(lineWithoutTabs, width: contentWidth)
-                    buffer += truncated.padding(toLength: contentWidth, withPad: " ", startingAt: 0)
+                    // Use TextRenderer.pad() which handles emoji/CJK display width correctly
+                    buffer += TextRenderer.pad(truncated, width: contentWidth)
                 } else {
                     buffer += String(repeating: " ", count: contentWidth)
                 }
