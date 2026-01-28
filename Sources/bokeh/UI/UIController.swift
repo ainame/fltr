@@ -186,16 +186,16 @@ actor UIController {
         // Build entire frame in a single buffer to minimize actor calls
         var buffer = ""
 
-        // Clear screen and reset cursor
-        buffer += "\u{001B}[H\u{001B}[J"  // Home cursor + clear to end
+        // Clear screen
+        buffer += "\u{001B}[2J"  // Clear entire screen
 
-        // Render input line
+        // Render input line (positions itself)
         buffer += renderInputLineToBuffer(cols: cols)
 
-        // Render matched items
+        // Render matched items (positions each line)
         buffer += renderItemListToBuffer(displayHeight: displayHeight, cols: cols)
 
-        // Render status bar
+        // Render status bar (positions itself)
         buffer += renderStatusBarToBuffer(row: displayHeight + 2, cols: cols)
 
         // Single write for entire frame
@@ -206,7 +206,7 @@ actor UIController {
     private func renderInputLineToBuffer(cols: Int) -> String {
         let prompt = "> "
         let displayQuery = TextRenderer.truncate(state.query, width: cols - prompt.count - 1)
-        return prompt + displayQuery + "\n"
+        return "\u{001B}[1;1H" + prompt + displayQuery + "\u{001B}[K"
     }
 
     private func renderItemListToBuffer(displayHeight: Int, cols: Int) -> String {
@@ -223,6 +223,7 @@ actor UIController {
 
         var buffer = ""
         for (displayIndex, matchedItem) in visibleItems.enumerated() {
+            let row = displayIndex + 2
             let actualIndex = startIndex + displayIndex
 
             let isSelected = state.selectedIndex == actualIndex
@@ -258,7 +259,10 @@ actor UIController {
             // Pad line to full width
             let content = prefix + displayText
             let paddedLine = TextRenderer.padWithoutANSI(content, width: cols - 1)
-            buffer += bgStart + paddedLine + bgEnd + "\n"
+
+            // Position cursor and write line
+            buffer += "\u{001B}[\(row);1H\u{001B}[K"
+            buffer += bgStart + paddedLine + bgEnd
         }
 
         return buffer
@@ -285,6 +289,6 @@ actor UIController {
             status += " [\(scrollPercent)%]"
         }
 
-        return TextRenderer.pad(status, width: cols)
+        return "\u{001B}[\(row);1H\u{001B}[K" + TextRenderer.pad(status, width: cols)
     }
 }
