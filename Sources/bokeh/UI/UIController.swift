@@ -4,6 +4,7 @@ import Foundation
 actor UIController {
     private let terminal: RawTerminal
     private let matcher: FuzzyMatcher
+    private let engine: MatchingEngine
     private let cache: ItemCache
     private var state = UIState()
     private var maxHeight: Int?  // nil = use full terminal height
@@ -11,6 +12,7 @@ actor UIController {
     init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, maxHeight: Int? = nil) {
         self.terminal = terminal
         self.matcher = matcher
+        self.engine = MatchingEngine(matcher: matcher)
         self.cache = cache
         self.maxHeight = maxHeight
     }
@@ -27,7 +29,8 @@ actor UIController {
         // Initial load
         let items = await cache.getAllItems()
         state.totalItems = items.count
-        state.updateMatches(matcher.matchItems(pattern: "", items: items))
+        let initialMatches = await engine.matchItemsParallel(pattern: "", items: items)
+        state.updateMatches(initialMatches)
 
         await render()
 
@@ -84,11 +87,11 @@ actor UIController {
         switch finalKey {
         case .char(let char):
             state.addChar(char)
-            updateMatchesIncremental(allItems: allItems)
+            await updateMatchesIncremental(allItems: allItems)
 
         case .backspace:
             state.deleteChar()
-            updateMatchesIncremental(allItems: allItems)
+            await updateMatchesIncremental(allItems: allItems)
 
         case .enter:
             state.shouldExit = true
@@ -100,7 +103,7 @@ actor UIController {
 
         case .ctrlU:
             state.clearQuery()
-            updateMatchesIncremental(allItems: allItems)
+            await updateMatchesIncremental(allItems: allItems)
 
         case .up:
             state.moveUp(visibleHeight: visibleHeight)
@@ -117,7 +120,8 @@ actor UIController {
     }
 
     /// Incremental filtering: search within previous results if query is extended
-    private func updateMatchesIncremental(allItems: [Item]) {
+    /// Uses parallel matching engine for large datasets
+    private func updateMatchesIncremental(allItems: [Item]) async {
         let newQuery = state.query
         let prevQuery = state.previousQuery
 
@@ -135,7 +139,8 @@ actor UIController {
             searchItems = allItems
         }
 
-        let results = matcher.matchItems(pattern: newQuery, items: searchItems)
+        // Use parallel matching engine
+        let results = await engine.matchItemsParallel(pattern: newQuery, items: searchItems)
         state.updateMatches(results)
         state.previousQuery = newQuery
     }
