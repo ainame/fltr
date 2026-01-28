@@ -218,6 +218,10 @@ actor UIController {
             let isSelected = state.selectedIndex == actualIndex
             let isMarked = state.selectedItems.contains(matchedItem.item.index)
 
+            // Apply background color for selected line (like fzf)
+            let bgStart = isSelected ? "\u{001B}[48;5;236m" : ""
+            let bgEnd = isSelected ? "\u{001B}[0m" : ""
+
             var prefix = "  "
             if isMarked {
                 prefix = " >"
@@ -235,7 +239,10 @@ actor UIController {
                 width: availableWidth
             )
 
-            let line = prefix + displayText
+            // Pad line to full width so background extends across entire line
+            let content = prefix + displayText
+            let paddedLine = TextRenderer.padWithoutANSI(content, width: cols - 1)
+            let line = bgStart + paddedLine + bgEnd
             await terminal.write(line)
         }
     }

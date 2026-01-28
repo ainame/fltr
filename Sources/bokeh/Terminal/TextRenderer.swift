@@ -78,4 +78,39 @@ struct TextRenderer {
         // Apply highlighting to truncated text
         return highlight(truncatedText, positions: validPositions)
     }
+
+    /// Pad text that may contain ANSI codes to exact width
+    /// Strips ANSI codes to calculate visual width, then pads with spaces
+    static func padWithoutANSI(_ text: String, width: Int) -> String {
+        // Strip ANSI codes to calculate actual display width
+        let stripped = stripANSI(text)
+        let currentWidth = displayWidth(stripped)
+
+        if currentWidth >= width {
+            return text
+        }
+
+        let padding = String(repeating: " ", count: width - currentWidth)
+        return text + padding
+    }
+
+    /// Strip ANSI escape sequences from text
+    private static func stripANSI(_ text: String) -> String {
+        var result = ""
+        var inEscape = false
+
+        for char in text {
+            if char == "\u{001B}" {
+                inEscape = true
+            } else if inEscape {
+                if char == "m" {
+                    inEscape = false
+                }
+            } else {
+                result.append(char)
+            }
+        }
+
+        return result
+    }
 }
