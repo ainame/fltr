@@ -60,7 +60,8 @@ bokeh --help
 USAGE: bokeh [--height <height>] [--multi] [--case-sensitive]
 
 OPTIONS:
-  -h, --height <height>   Display height (number of result lines) (default: 10)
+  -h, --height <height>   Maximum display height (number of result lines)
+                          Omit to use full terminal height (default)
   -m, --multi             Enable multi-select mode
   --case-sensitive        Enable case-sensitive matching
   --help                  Show help information
@@ -81,17 +82,20 @@ OPTIONS:
 ### Examples
 
 ```bash
-# Basic file selection
+# Basic file selection (uses full terminal height by default)
 echo -e "apple\nbanana\ncherry\napricot\navocado" | bokeh
 
 # Multi-select mode
 ls -la | bokeh --multi
 
-# Custom height
+# Limit display height to 15 lines
 find . -name "*.swift" | bokeh --height 15
 
 # Case-sensitive matching
 cat words.txt | bokeh --case-sensitive
+
+# Full terminal height is great for large datasets
+find . -type f | bokeh  # Shows as many results as fit on your screen
 ```
 
 ## Architecture

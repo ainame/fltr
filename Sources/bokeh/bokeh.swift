@@ -12,8 +12,8 @@ struct Bokeh: AsyncParsableCommand {
         """
     )
 
-    @Option(name: .shortAndLong, help: "Display height (number of result lines)")
-    var height: Int = 10
+    @Option(name: .shortAndLong, help: "Maximum display height (number of result lines). Omit to use full terminal height.")
+    var height: Int?
 
     @Flag(name: .shortAndLong, help: "Enable multi-select mode")
     var multi: Bool = false
@@ -38,7 +38,7 @@ struct Bokeh: AsyncParsableCommand {
         // Initialize UI components
         let terminal = RawTerminal()
         let matcher = FuzzyMatcher(caseSensitive: caseSensitive)
-        let ui = UIController(terminal: terminal, matcher: matcher, cache: cache, height: height)
+        let ui = UIController(terminal: terminal, matcher: matcher, cache: cache, maxHeight: height)
 
         // Run UI
         let selectedItems = try await ui.run()

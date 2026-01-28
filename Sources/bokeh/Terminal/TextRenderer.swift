@@ -43,13 +43,39 @@ struct TextRenderer {
 
         for (index, char) in chars.enumerated() {
             if posSet.contains(index) {
-                // Highlight with reverse video
-                result += "\u{001B}[7m\(char)\u{001B}[27m"
+                // Highlight with bold + color (more reliable than reverse video)
+                result += "\u{001B}[1;32m\(char)\u{001B}[0m"
             } else {
                 result.append(char)
             }
         }
 
         return result
+    }
+
+    /// Truncate text and then apply highlighting (ANSI-safe)
+    /// This ensures ANSI escape sequences don't break width calculation
+    static func truncateAndHighlight(_ text: String, positions: [Int], width: Int) -> String {
+        // First truncate to fit width
+        var currentWidth = 0
+        var truncatedLength = 0
+
+        for char in text {
+            let charWidth = displayWidth(char)
+            if currentWidth + charWidth > width {
+                break
+            }
+            currentWidth += charWidth
+            truncatedLength += 1
+        }
+
+        // Get truncated text
+        let truncatedText = String(text.prefix(truncatedLength))
+
+        // Filter positions to only include those within truncated range
+        let validPositions = positions.filter { $0 < truncatedLength }
+
+        // Apply highlighting to truncated text
+        return highlight(truncatedText, positions: validPositions)
     }
 }

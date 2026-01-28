@@ -6,13 +6,13 @@ actor UIController {
     private let matcher: FuzzyMatcher
     private let cache: ItemCache
     private var state = UIState()
-    private var height: Int = 10
+    private var maxHeight: Int?  // nil = use full terminal height
 
-    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, height: Int = 10) {
+    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, maxHeight: Int? = nil) {
         self.terminal = terminal
         self.matcher = matcher
         self.cache = cache
-        self.height = height
+        self.maxHeight = maxHeight
     }
 
     /// Run the main UI loop
@@ -114,6 +114,11 @@ actor UIController {
     private func render() async {
         let (rows, cols) = (try? await terminal.getSize()) ?? (24, 80)
 
+        // Calculate available rows for items
+        // Layout: row 1 = input, rows 2..N = items, row N+1 = status
+        let availableRows = rows - 3  // 1 for input, 1 for status, 1 for spacing
+        let displayHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
+
         // Clear screen
         await terminal.moveCursor(row: 1, col: 1)
         await terminal.clearToEnd()
@@ -122,10 +127,10 @@ actor UIController {
         await renderInputLine(cols: cols)
 
         // Render matched items
-        await renderItemList(rows: rows, cols: cols)
+        await renderItemList(displayHeight: displayHeight, cols: cols)
 
         // Render status bar
-        await renderStatusBar(row: min(height + 2, rows), cols: cols)
+        await renderStatusBar(row: displayHeight + 2, cols: cols)
 
         await terminal.flush()
     }
@@ -137,9 +142,8 @@ actor UIController {
         await terminal.write(prompt + displayQuery)
     }
 
-    private func renderItemList(rows: Int, cols: Int) async {
-        let availableRows = min(height, rows - 3)
-        let displayItems = Array(state.matchedItems.prefix(availableRows))
+    private func renderItemList(displayHeight: Int, cols: Int) async {
+        let displayItems = Array(state.matchedItems.prefix(displayHeight))
 
         for (index, matchedItem) in displayItems.enumerated() {
             let row = index + 2
@@ -158,8 +162,13 @@ actor UIController {
             }
 
             let text = matchedItem.item.text
-            let highlighted = TextRenderer.highlight(text, positions: matchedItem.matchResult.positions)
-            let displayText = TextRenderer.truncate(highlighted, width: cols - prefix.count - 1)
+            let availableWidth = cols - prefix.count - 1
+            // Use the new ANSI-safe truncate and highlight
+            let displayText = TextRenderer.truncateAndHighlight(
+                text,
+                positions: matchedItem.matchResult.positions,
+                width: availableWidth
+            )
 
             let line = prefix + displayText
             await terminal.write(line)
