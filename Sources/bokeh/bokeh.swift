@@ -21,6 +21,9 @@ struct Bokeh: AsyncParsableCommand {
     @Flag(name: .long, help: "Enable case-sensitive matching")
     var caseSensitive: Bool = false
 
+    @Option(name: .long, help: "Preview command to execute for selected item. Use {} as placeholder for the item text.")
+    var preview: String?
+
     mutating func run() async throws {
         // Initialize components
         let cache = ItemCache()
@@ -40,7 +43,8 @@ struct Bokeh: AsyncParsableCommand {
             matcher: matcher,
             cache: cache,
             reader: reader,
-            maxHeight: height
+            maxHeight: height,
+            previewCommand: preview
         )
 
         // Run UI (starts immediately, even if stdin still reading)

@@ -11,14 +11,17 @@ actor UIController {
     private var maxHeight: Int?  // nil = use full terminal height
     private var lastItemCount: Int = 0
     private var isReadingStdin: Bool = true  // Cache to avoid async call in render
+    private let previewCommand: String?
+    private var cachedPreview: String = ""  // Cache to avoid re-running preview on every render
 
-    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil) {
+    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, previewCommand: String? = nil) {
         self.terminal = terminal
         self.matcher = matcher
         self.engine = MatchingEngine(matcher: matcher)
         self.cache = cache
         self.reader = reader
         self.maxHeight = maxHeight
+        self.previewCommand = previewCommand
     }
 
     /// Run the main UI loop
@@ -37,6 +40,7 @@ actor UIController {
         let initialMatches = await engine.matchItemsParallel(pattern: "", items: allItems)
         state.updateMatches(initialMatches)
 
+        await updatePreview()
         await render()
 
         var lastRefresh = Date()
@@ -118,10 +122,12 @@ actor UIController {
         case .char(let char):
             state.addChar(char)
             await updateMatchesIncremental(allItems: allItems)
+            await updatePreview()
 
         case .backspace:
             state.deleteChar()
             await updateMatchesIncremental(allItems: allItems)
+            await updatePreview()
 
         case .enter:
             state.shouldExit = true
@@ -134,12 +140,15 @@ actor UIController {
         case .ctrlU:
             state.clearQuery()
             await updateMatchesIncremental(allItems: allItems)
+            await updatePreview()
 
         case .up:
             state.moveUp(visibleHeight: visibleHeight)
+            await updatePreview()
 
         case .down:
             state.moveDown(visibleHeight: visibleHeight)
+            await updatePreview()
 
         case .tab:
             state.toggleSelection()
@@ -183,6 +192,12 @@ actor UIController {
         let availableRows = rows - 3  // 1 for input, 1 for status, 1 for spacing
         let displayHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
 
+        // Split screen if preview is enabled
+        let hasPreview = previewCommand != nil
+        let listWidth = hasPreview ? cols / 2 - 1 : cols
+        let previewStartCol = hasPreview ? cols / 2 + 2 : 0
+        let previewWidth = hasPreview ? cols / 2 - 2 : 0
+
         // Build entire frame in a single buffer to minimize actor calls
         var buffer = ""
 
@@ -190,13 +205,29 @@ actor UIController {
         buffer += "\u{001B}[2J"  // Clear entire screen
 
         // Render input line (positions itself)
-        buffer += renderInputLineToBuffer(cols: cols)
+        buffer += renderInputLineToBuffer(cols: listWidth)
 
         // Render matched items (positions each line)
-        buffer += renderItemListToBuffer(displayHeight: displayHeight, cols: cols)
+        buffer += renderItemListToBuffer(displayHeight: displayHeight, cols: listWidth)
 
         // Render status bar (positions itself)
-        buffer += renderStatusBarToBuffer(row: displayHeight + 2, cols: cols)
+        buffer += renderStatusBarToBuffer(row: displayHeight + 2, cols: listWidth)
+
+        // Render vertical separator if preview enabled
+        if hasPreview {
+            let separatorCol = cols / 2 + 1
+            for row in 1...rows {
+                buffer += "\u{001B}[\(row);\(separatorCol)H│"
+            }
+
+            // Render preview pane
+            buffer += renderPreviewToBuffer(
+                startRow: 2,
+                endRow: displayHeight + 1,
+                startCol: previewStartCol,
+                width: previewWidth
+            )
+        }
 
         // Single write for entire frame
         await terminal.write(buffer)
@@ -290,5 +321,69 @@ actor UIController {
         }
 
         return "\u{001B}[\(row);1H\u{001B}[K" + TextRenderer.pad(status, width: cols)
+    }
+
+    /// Update preview for currently selected item
+    private func updatePreview() async {
+        guard let command = previewCommand else { return }
+        guard !state.matchedItems.isEmpty else {
+            cachedPreview = ""
+            return
+        }
+
+        let selectedItem = state.matchedItems[state.selectedIndex]
+        cachedPreview = await executePreviewCommand(command, item: selectedItem.item.text)
+    }
+
+    /// Execute preview command with item text substitution
+    private func executePreviewCommand(_ command: String, item: String) async -> String {
+        // Replace {} with item text
+        let expandedCommand = command.replacingOccurrences(of: "{}", with: item)
+
+        // Execute via shell
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", expandedCommand]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let output = String(data: data, encoding: .utf8) {
+                return output
+            }
+        } catch {
+            return "Error: \(error.localizedDescription)"
+        }
+
+        return ""
+    }
+
+    /// Render preview pane to buffer
+    private func renderPreviewToBuffer(startRow: Int, endRow: Int, startCol: Int, width: Int) -> String {
+        guard previewCommand != nil else { return "" }
+
+        var buffer = ""
+        let lines = cachedPreview.split(separator: "\n", omittingEmptySubsequences: false)
+        let maxLines = endRow - startRow + 1
+
+        for (index, line) in lines.prefix(maxLines).enumerated() {
+            let row = startRow + index
+            let truncated = TextRenderer.truncate(String(line), width: width)
+            buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
+            buffer += truncated
+        }
+
+        // Clear remaining lines if preview is shorter
+        for row in (startRow + lines.count)..<endRow {
+            buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
+        }
+
+        return buffer
     }
 }
