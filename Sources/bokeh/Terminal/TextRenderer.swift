@@ -43,8 +43,8 @@ struct TextRenderer {
 
         for (index, char) in chars.enumerated() {
             if posSet.contains(index) {
-                // Highlight with bold + color (more reliable than reverse video)
-                result += "\u{001B}[1;32m\(char)\u{001B}[0m"
+                // Highlight with bold + green, preserve background
+                result += "\u{001B}[1;32m\(char)\u{001B}[22;39m"
             } else {
                 result.append(char)
             }

@@ -218,20 +218,32 @@ actor UIController {
             let isSelected = state.selectedIndex == actualIndex
             let isMarked = state.selectedItems.contains(matchedItem.item.index)
 
+            // Swift logo orange color (ANSI 202) with bold, like fzf's cursor
+            let swiftOrange = "\u{001B}[1;38;5;202m"
+            let resetFg = "\u{001B}[22;39m"  // Reset bold and foreground, keep background
+
+            var prefix = "  "
+            if isMarked {
+                prefix = " \(swiftOrange)>\(resetFg)"
+            }
+            if isSelected {
+                if isMarked {
+                    // Both selected and marked: show cursor after marker
+                    prefix = "\(swiftOrange)>>\(resetFg)"
+                } else {
+                    // Just selected: show cursor
+                    prefix = " \(swiftOrange)>\(resetFg)"
+                }
+            }
+
             // Apply background color for selected line (like fzf)
             let bgStart = isSelected ? "\u{001B}[48;5;236m" : ""
             let bgEnd = isSelected ? "\u{001B}[0m" : ""
 
-            var prefix = "  "
-            if isMarked {
-                prefix = " >"
-            }
-            if isSelected {
-                prefix = String(prefix.dropFirst()) + ">"
-            }
-
             let text = matchedItem.item.text
-            let availableWidth = cols - prefix.count - 1
+            // Calculate visual width of prefix (without ANSI codes, always 2 chars)
+            let prefixVisualWidth = 2
+            let availableWidth = cols - prefixVisualWidth - 1
             // Use the new ANSI-safe truncate and highlight
             let displayText = TextRenderer.truncateAndHighlight(
                 text,
