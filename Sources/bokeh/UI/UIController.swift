@@ -333,31 +333,61 @@ actor UIController {
 
     /// Execute preview command with item text substitution
     private func executePreviewCommand(_ command: String, item: String) async -> String {
-        // Replace {} with item text
-        let expandedCommand = command.replacingOccurrences(of: "{}", with: item)
+        // Replace {} with item text, shell-escape it
+        let escapedItem = item.replacingOccurrences(of: "'", with: "'\\''")
+        let expandedCommand = command.replacingOccurrences(of: "{}", with: "'\(escapedItem)'")
 
-        // Execute via shell
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", expandedCommand]
+        // Execute via shell with timeout
+        return await withTaskGroup(of: String.self) { group in
+            group.addTask {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                process.arguments = ["-c", expandedCommand]
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+                let pipe = Pipe()
+                process.standardOutput = pipe
+                process.standardError = pipe
 
-        do {
-            try process.run()
-            process.waitUntilExit()
+                do {
+                    try process.run()
 
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8) {
-                return output
+                    // Read data in background
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    process.waitUntilExit()
+
+                    // Limit output size to avoid memory issues
+                    let maxBytes = 1_000_000  // 1MB
+                    let limitedData = data.prefix(maxBytes)
+
+                    if let output = String(data: limitedData, encoding: .utf8) {
+                        // Limit lines too
+                        let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+                        if lines.count > 1000 {
+                            return lines.prefix(1000).joined(separator: "\n") + "\n\n[Output truncated - showing first 1000 lines]"
+                        }
+                        return output
+                    }
+                } catch {
+                    return "Error: \(error.localizedDescription)"
+                }
+
+                return ""
             }
-        } catch {
-            return "Error: \(error.localizedDescription)"
-        }
 
-        return ""
+            // Timeout task
+            group.addTask {
+                try? await Task.sleep(for: .seconds(2))
+                return "[Preview timeout - command took too long]"
+            }
+
+            // Return first result (either success or timeout)
+            if let result = await group.next() {
+                group.cancelAll()
+                return result
+            }
+
+            return "[Preview failed]"
+        }
     }
 
     /// Render preview pane to buffer
