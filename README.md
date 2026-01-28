@@ -92,11 +92,12 @@ OPTIONS:
 | Key | Action |
 |-----|--------|
 | Type characters | Filter items with fuzzy matching |
-| `Up` / `Down` | Navigate through results (scrolls automatically) |
+| `Up` / `Down` / `Ctrl-P` / `Ctrl-N` | Navigate through results (scrolls automatically) |
 | `Enter` | Select current item and exit |
 | `Tab` | Toggle multi-select on current item |
 | `Esc` / `Ctrl-C` | Exit without selection |
 | `Ctrl-U` | Clear query |
+| `Ctrl-O` | Toggle floating preview window (when --preview is used) |
 | `Backspace` | Delete last character |
 
 **Note:** Results scroll automatically when you navigate beyond the visible area. The status bar shows a scroll percentage indicator `[%]` when there are more items than fit on screen.
@@ -118,6 +119,36 @@ cat words.txt | bokeh --case-sensitive
 
 # Full terminal height is great for large datasets
 find . -type f | bokeh  # Shows as many results as fit on your screen
+
+# Preview file contents with floating window
+find . -name "*.swift" | bokeh --preview 'head -30 {}'
+# Press Ctrl-O to toggle the floating preview window
+
+# Preview with syntax highlighting (requires bat)
+find . -type f | bokeh --preview 'bat --color=always --style=numbers {}'
+```
+
+### Preview Window
+
+bokeh supports a **floating preview window** that overlays the list when you press `Ctrl-O`:
+
+```bash
+# Basic preview
+find . -type f | bokeh --preview 'cat {}'
+```
+
+The floating window features:
+- **Bordered box** with title showing the selected item
+- **80% of screen size**, centered
+- **Shadow effect** for depth
+- **Toggle with Ctrl-O** - show/hide without exiting
+- **Auto-updates** as you navigate or filter
+
+The `{}` placeholder is replaced with the selected item text. You can use any shell command:
+- `cat {}` - Show file contents
+- `head -50 {}` - First 50 lines
+- `file {}` - File type info
+- `git log -- {}` - Git history for file
 ```
 
 ## Architecture

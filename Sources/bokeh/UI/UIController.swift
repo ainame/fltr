@@ -13,6 +13,7 @@ actor UIController {
     private var isReadingStdin: Bool = true  // Cache to avoid async call in render
     private let previewCommand: String?
     private var cachedPreview: String = ""  // Cache to avoid re-running preview on every render
+    private var showFloatingPreview: Bool = false  // Toggle floating preview window
 
     init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, previewCommand: String? = nil) {
         self.terminal = terminal
@@ -153,6 +154,15 @@ actor UIController {
         case .tab:
             state.toggleSelection()
 
+        case .ctrlO:
+            // Toggle floating preview window
+            if previewCommand != nil {
+                showFloatingPreview.toggle()
+                if showFloatingPreview {
+                    await updatePreview()
+                }
+            }
+
         default:
             break
         }
@@ -192,11 +202,8 @@ actor UIController {
         let availableRows = rows - 3  // 1 for input, 1 for status, 1 for spacing
         let displayHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
 
-        // Split screen if preview is enabled
-        let hasPreview = previewCommand != nil
-        let listWidth = hasPreview ? cols / 2 - 1 : cols
-        let previewStartCol = hasPreview ? cols / 2 + 2 : 0
-        let previewWidth = hasPreview ? cols / 2 - 2 : 0
+        // Use full width if floating preview or no preview
+        let listWidth = cols
 
         // Build entire frame in a single buffer to minimize actor calls
         var buffer = ""
@@ -213,20 +220,9 @@ actor UIController {
         // Render status bar (positions itself)
         buffer += renderStatusBarToBuffer(row: displayHeight + 2, cols: listWidth)
 
-        // Render vertical separator if preview enabled
-        if hasPreview {
-            let separatorCol = cols / 2 + 1
-            for row in 1...rows {
-                buffer += "\u{001B}[\(row);\(separatorCol)H│"
-            }
-
-            // Render preview pane
-            buffer += renderPreviewToBuffer(
-                startRow: 2,
-                endRow: displayHeight + 1,
-                startCol: previewStartCol,
-                width: previewWidth
-            )
+        // Render floating preview window if enabled
+        if showFloatingPreview {
+            buffer += renderFloatingPreview(rows: rows, cols: cols)
         }
 
         // Single write for entire frame
@@ -383,6 +379,78 @@ actor UIController {
         for row in (startRow + lines.count)..<endRow {
             buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
         }
+
+        return buffer
+    }
+
+    /// Render floating window with borders for preview
+    private func renderFloatingPreview(rows: Int, cols: Int) -> String {
+        guard showFloatingPreview, previewCommand != nil else { return "" }
+
+        // Calculate window dimensions (80% of screen, centered)
+        let windowWidth = Int(Double(cols) * 0.8)
+        let windowHeight = Int(Double(rows) * 0.7)
+        let startRow = (rows - windowHeight) / 2
+        let startCol = (cols - windowWidth) / 2
+
+        var buffer = ""
+        let lines = cachedPreview.split(separator: "\n", omittingEmptySubsequences: false)
+
+        // Get selected item name for title
+        let itemName = !state.matchedItems.isEmpty
+            ? state.matchedItems[state.selectedIndex].item.text
+            : ""
+        let title = " Preview: \(itemName) "
+
+        // Draw top border with title
+        buffer += "\u{001B}[\(startRow);\(startCol)H"
+        buffer += "╔"
+        let titleStart = (windowWidth - title.count - 2) / 2
+        let leftBorder = String(repeating: "═", count: max(0, titleStart))
+        let rightBorder = String(repeating: "═", count: max(0, windowWidth - titleStart - title.count - 2))
+        buffer += leftBorder + title + rightBorder
+        buffer += "╗"
+
+        // Draw content with left/right borders
+        let contentWidth = windowWidth - 2
+        let contentHeight = windowHeight - 2
+        for i in 0..<contentHeight {
+            let row = startRow + i + 1
+            buffer += "\u{001B}[\(row);\(startCol)H║"
+
+            if i < lines.count {
+                let line = String(lines[i])
+                let truncated = TextRenderer.truncate(line, width: contentWidth)
+                buffer += truncated.padding(toLength: contentWidth, withPad: " ", startingAt: 0)
+            } else {
+                buffer += String(repeating: " ", count: contentWidth)
+            }
+
+            buffer += "║"
+        }
+
+        // Draw bottom border with help text
+        buffer += "\u{001B}[\(startRow + windowHeight - 1);\(startCol)H"
+        buffer += "╚"
+        let helpText = " Ctrl-O to close "
+        let bottomLeft = String(repeating: "═", count: (windowWidth - helpText.count - 2) / 2)
+        let bottomRight = String(repeating: "═", count: windowWidth - bottomLeft.count - helpText.count - 2)
+        buffer += bottomLeft + helpText + bottomRight
+        buffer += "╝"
+
+        // Draw shadow effect (dim gray characters to the right and bottom)
+        let shadowColor = "\u{001B}[2;37m"  // Dim white
+        let resetColor = "\u{001B}[0m"
+
+        // Right shadow
+        for shadowRow in (startRow + 1)...(startRow + windowHeight) {
+            buffer += "\u{001B}[\(shadowRow);\(startCol + windowWidth)H"
+            buffer += "\(shadowColor)▓\(resetColor)"
+        }
+
+        // Bottom shadow
+        buffer += "\u{001B}[\(startRow + windowHeight);\(startCol + 1)H"
+        buffer += "\(shadowColor)" + String(repeating: "▓", count: windowWidth) + "\(resetColor)"
 
         return buffer
     }

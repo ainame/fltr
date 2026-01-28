@@ -15,6 +15,7 @@ enum Key: Equatable, Sendable {
     case ctrlC
     case ctrlD
     case ctrlU
+    case ctrlO  // Toggle preview
     case unknown
 }
 
@@ -64,6 +65,9 @@ struct KeyboardInput {
 
         case 14:  // Ctrl-N (next/down)
             return .down
+
+        case 15:  // Ctrl-O (toggle preview)
+            return .ctrlO
 
         case 32...126:  // Printable ASCII
             return .char(Character(UnicodeScalar(firstByte)))
