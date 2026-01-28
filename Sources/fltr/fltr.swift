@@ -3,12 +3,12 @@ import ArgumentParser
 import TUI
 
 @main
-struct Bokeh: AsyncParsableCommand {
+struct Fltr: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "bokeh",
+        commandName: "fltr",
         abstract: "A fuzzy finder for the terminal",
         discussion: """
-        bokeh (meaning "fuzzy" in Japanese) is a cross-platform fuzzy finder CLI tool.
+        fltr (short for "filter") is a cross-platform fuzzy finder CLI tool.
         Read items from stdin and interactively filter them with fuzzy matching.
         """
     )

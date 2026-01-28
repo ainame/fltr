@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "bokeh",
+    name: "fltr",
     platforms: [
         .macOS(.v26),
     ],
@@ -30,9 +30,9 @@ let package = Package(
             ]
         ),
 
-        // bokeh - Fuzzy finder executable
+        // fltr - Fuzzy finder executable
         .executableTarget(
-            name: "bokeh",
+            name: "fltr",
             dependencies: [
                 "TUI",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
@@ -45,8 +45,8 @@ let package = Package(
 
         // Tests
         .testTarget(
-            name: "bokehTests",
-            dependencies: ["bokeh"]
+            name: "fltrTests",
+            dependencies: ["fltr"]
         ),
     ]
 )

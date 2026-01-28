@@ -1,8 +1,8 @@
-# bokeh
+# fltr
 
 A cross-platform fuzzy finder CLI tool written in Swift 6.2.
 
-**bokeh** (meaning "fuzzy" in Japanese) is inspired by [fzf](https://github.com/junegunn/fzf) (Go) and [skim](https://github.com/lotabout/skim) (Rust), but leverages Swift's modern concurrency features and ecosystem.
+**fltr** (short for "filter") is inspired by [fzf](https://github.com/junegunn/fzf) (Go) and [skim](https://github.com/lotabout/skim) (Rust), but leverages Swift's modern concurrency features and ecosystem.
 
 ## Features
 
@@ -16,19 +16,20 @@ A cross-platform fuzzy finder CLI tool written in Swift 6.2.
 - **Unicode support** - CJK characters, emojis, grapheme clusters
 - **Whitespace as AND** - "swift util" matches items containing both tokens
 - **Case-insensitive** by default (with `--case-sensitive` option)
+- **Emacs-like key bindings** - Ctrl-A, Ctrl-E, Ctrl-F, Ctrl-B, Ctrl-K for cursor movement
 
 ## Installation
 
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd bokeh
+cd fltr
 
 # Build
 swift build -c release
 
 # Install (optional)
-cp .build/release/bokeh /usr/local/bin/
+cp .build/release/fltr /usr/local/bin/
 ```
 
 ## Usage
@@ -36,28 +37,28 @@ cp .build/release/bokeh /usr/local/bin/
 ### Basic Usage
 
 ```bash
-# Pipe data to bokeh
-ls | bokeh
+# Pipe data to fltr
+ls | fltr
 
 # Find files
-find . -type f | bokeh
+find . -type f | fltr
 
 # Filter command history
-history | bokeh
+history | fltr
 
 # Works great with massive datasets (streams in background)
-find / -type f 2>/dev/null | bokeh
+find / -type f 2>/dev/null | fltr
 # UI starts immediately, even while find is still running!
 ```
 
-**Note:** bokeh streams stdin in the background, so the UI appears immediately even for huge datasets. The status bar shows `[loading...]` while input is still being read. This means you can start typing and filtering even before all items have loaded!
+**Note:** fltr streams stdin in the background, so the UI appears immediately even for huge datasets. The status bar shows `[loading...]` while input is still being read. This means you can start typing and filtering even before all items have loaded!
 
 ### Command-Line Options
 
 ```bash
-bokeh --help
+fltr --help
 
-USAGE: bokeh [--height <height>] [--multi] [--case-sensitive] [--preview <preview>] [--preview-float <preview-float>]
+USAGE: fltr [--height <height>] [--multi] [--case-sensitive] [--preview <preview>] [--preview-float <preview-float>]
 
 OPTIONS:
   -h, --height <height>   Maximum display height (number of result lines)
@@ -77,12 +78,16 @@ OPTIONS:
 |-----|--------|
 | Type characters | Filter items with fuzzy matching |
 | `Up` / `Down` / `Ctrl-P` / `Ctrl-N` | Navigate through results (scrolls automatically) |
+| `Left` / `Right` / `Ctrl-B` / `Ctrl-F` | Move cursor in input field |
+| `Ctrl-A` | Move cursor to beginning of input |
+| `Ctrl-E` | Move cursor to end of input |
+| `Ctrl-K` | Delete from cursor to end of input |
 | `Enter` | Select current item and exit |
 | `Tab` | Toggle multi-select on current item (requires `-m`) |
 | `Esc` / `Ctrl-C` | Exit without selection |
 | `Ctrl-U` | Clear query |
 | `Ctrl-O` | Toggle preview window on/off |
-| `Backspace` | Delete last character |
+| `Backspace` | Delete character before cursor |
 
 **Note:** Results scroll automatically when you navigate beyond the visible area. The status bar shows a scroll percentage indicator `[%]` when there are more items than fit on screen.
 
@@ -90,35 +95,35 @@ OPTIONS:
 
 ```bash
 # Basic file selection (uses full terminal height by default)
-echo -e "apple\nbanana\ncherry\napricot\navocado" | bokeh
+echo -e "apple\nbanana\ncherry\napricot\navocado" | fltr
 
 # Multi-select mode
-ls -la | bokeh --multi
+ls -la | fltr --multi
 
 # Limit display height to 15 lines
-find . -name "*.swift" | bokeh --height 15
+find . -name "*.swift" | fltr --height 15
 
 # Case-sensitive matching
-cat words.txt | bokeh --case-sensitive
+cat words.txt | fltr --case-sensitive
 
 # Full terminal height is great for large datasets
-find . -type f | bokeh  # Shows as many results as fit on your screen
+find . -type f | fltr  # Shows as many results as fit on your screen
 
 # Preview file contents (split-screen, fzf style)
-find . -name "*.swift" | bokeh --preview 'cat {}'
+find . -name "*.swift" | fltr --preview 'cat {}'
 # Press Ctrl-O to toggle preview on/off
 
 # Preview with syntax highlighting (split-screen)
-find . -type f | bokeh --preview 'bat --color=always --style=numbers {}'
+find . -type f | fltr --preview 'bat --color=always --style=numbers {}'
 
 # Floating preview window overlay
-find . -type f | bokeh --preview-float 'head -30 {}'
+find . -type f | fltr --preview-float 'head -30 {}'
 # Press Ctrl-O to toggle floating window
 ```
 
 ### Preview Window
 
-bokeh supports **two preview styles**:
+fltr supports **two preview styles**:
 
 #### 1. Split-Screen Preview (`--preview`) - fzf style
 
@@ -126,10 +131,10 @@ The default preview mode shows a split-screen layout (50/50) with a vertical sep
 
 ```bash
 # Split-screen preview (always visible)
-find . -type f | bokeh --preview 'cat {}'
+find . -type f | fltr --preview 'cat {}'
 
 # With syntax highlighting
-find . -type f | bokeh --preview 'bat --color=always --style=numbers {}'
+find . -type f | fltr --preview 'bat --color=always --style=numbers {}'
 ```
 
 **Split-screen features:**
@@ -150,7 +155,7 @@ An overlay-style preview window that appears on top of the list:
 
 ```bash
 # Floating window preview
-find . -type f | bokeh --preview-float 'head -30 {}'
+find . -type f | fltr --preview-float 'head -30 {}'
 ```
 
 **Floating window features:**
@@ -175,13 +180,13 @@ Both preview modes use `{}` as a placeholder for the selected item text. You can
 
 ## Architecture
 
-bokeh is built with a modular architecture, separating reusable TUI components from application logic:
+fltr is built with a modular architecture, separating reusable TUI components from application logic:
 
 ### Targets
 
 ```
 ┌─────────────────────────────────────────────┐
-│                  bokeh                      │  ← Executable
+│                  fltr                       │  ← Executable
 │                                             │
 │  Fuzzy Finder Implementation:               │
 │  - Matcher/     (fuzzy matching algorithm)  │
@@ -193,7 +198,7 @@ bokeh is built with a modular architecture, separating reusable TUI components f
                    │ depends on
                    ↓
 ┌─────────────────────────────────────────────┐
-│                TUI                     │  ← Library
+│                TUI                          │  ← Library
 │                                             │
 │  Reusable Terminal UI Foundation:           │
 │  - RawTerminal     (raw mode, I/O, cursor)  │
@@ -211,21 +216,21 @@ bokeh is built with a modular architecture, separating reusable TUI components f
 └──────┬──────┘
        │
 ┌──────▼──────────┐
-│  StdinReader    │ ← Reads lines into cache (bokeh)
+│  StdinReader    │ ← Reads lines into cache
 │  (Actor)        │
 └──────┬──────────┘
        │
 ┌──────▼──────────┐
-│   ItemCache     │ ← Chunk-based storage (bokeh)
+│   ItemCache     │ ← Chunk-based storage
 │   (Actor)       │
 └──────┬──────────┘
        │
 ┌──────▼──────────┐
-│ FuzzyMatcher    │ ← FuzzyMatchV2 algorithm (bokeh)
+│ FuzzyMatcher    │ ← FuzzyMatchV2 algorithm
 └──────┬──────────┘
        │
 ┌──────▼──────────┐
-│  UIController   │ ← Event loop, rendering (bokeh)
+│  UIController   │ ← Event loop, rendering
 │   (Actor)       │
 └──────┬──────────┘
        │
@@ -255,6 +260,7 @@ TUI is a reusable terminal UI library that can be used independently:
 - Control keys (Ctrl-C, Ctrl-D, etc.)
 - Arrow keys and escape sequences
 - Special keys (Tab, Enter, Backspace)
+- Emacs-like bindings (Ctrl-A, Ctrl-E, Ctrl-F, Ctrl-B, Ctrl-K)
 
 **TextRenderer** - Unicode-aware text rendering
 - Display width calculation (CJK, emoji, grapheme clusters)
@@ -306,25 +312,23 @@ swift build
 
 ```bash
 swift test
-
-# Manual interactive testing
-./test_bokeh.sh
 ```
 
 ### Project Structure
 
 ```
-bokeh/
+fltr/
 ├── Package.swift
 ├── README.md
 ├── Sources/
-│   ├── TUI/             # Reusable TUI library
+│   ├── BokehCSystem/       # C system shims for cross-platform
+│   ├── TUI/                # Reusable TUI library
 │   │   ├── RawTerminal.swift    # Terminal control
 │   │   ├── KeyboardInput.swift  # Key parsing
 │   │   ├── TextRenderer.swift   # Unicode/ANSI text rendering
 │   │   └── Screen.swift         # Virtual screen buffer
-│   └── bokeh/                # Fuzzy finder executable
-│       ├── bokeh.swift          # Main entry point
+│   └── fltr/               # Fuzzy finder executable
+│       ├── fltr.swift           # Main entry point
 │       ├── Matcher/             # Fuzzy matching
 │       │   ├── FuzzyMatcher.swift
 │       │   ├── Algorithm.swift
@@ -343,13 +347,13 @@ bokeh/
 │           ├── UIController.swift
 │           └── UIState.swift
 └── Tests/
-    └── bokehTests/
+    └── fltrTests/
 ```
 
 ## Platform Support
 
 - macOS 14+ (Sonoma)
-- Linux (via Swift 6.2)
+- Linux (via Swift 6.2 Static Linux SDK)
 
 Terminal requirements:
 - ANSI escape sequence support
@@ -380,10 +384,10 @@ Terminal requirements:
 **Benchmark Examples:**
 ```bash
 # 1,000 items: ~instant
-find . -name "*.swift" | bokeh
+find . -name "*.swift" | fltr
 
 # 10,000 items: ~50ms per keystroke (4-core CPU)
-find . -type f | bokeh
+find . -type f | fltr
 
 # 100,000 items: ~200ms per keystroke (4-core CPU)
 # Incremental: ~20ms after first search
@@ -415,4 +419,4 @@ Contributions welcome! Please follow these guidelines:
 - [skim](https://github.com/lotabout/skim) (MIT) - Architecture inspiration
 - Apple's Swift team for excellent ecosystem libraries
 
-bokeh is a clean-room reimplementation in Swift, inspired by fzf's algorithm concepts but written from scratch.
+fltr is a clean-room reimplementation in Swift, inspired by fzf's algorithm concepts but written from scratch.
