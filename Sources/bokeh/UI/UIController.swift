@@ -94,7 +94,7 @@ actor UIController {
     private func handleKey(byte: UInt8, allItems: [Item]) async {
         // Calculate visible height for scrolling
         let (rows, _) = (try? await terminal.getSize()) ?? (24, 80)
-        let availableRows = rows - 3
+        let availableRows = rows - 4  // Account for input, border, status, and spacing
         let visibleHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
 
         // Helper to read next byte
@@ -150,6 +150,29 @@ actor UIController {
             state.clearQuery()
             await updateMatchesIncremental(allItems: allItems)
             await updatePreview()
+
+        case .ctrlK:
+            state.deleteToEndOfLine()
+            await updateMatchesIncremental(allItems: allItems)
+            await updatePreview()
+
+        case .ctrlA:
+            state.moveCursorToStart()
+
+        case .ctrlE:
+            state.moveCursorToEnd()
+
+        case .ctrlF:
+            state.moveCursorRight()
+
+        case .ctrlB:
+            state.moveCursorLeft()
+
+        case .left:
+            state.moveCursorLeft()
+
+        case .right:
+            state.moveCursorRight()
 
         case .up:
             state.moveUp(visibleHeight: visibleHeight)
@@ -215,8 +238,8 @@ actor UIController {
         let (rows, cols) = (try? await terminal.getSize()) ?? (24, 80)
 
         // Calculate available rows for items
-        // Layout: row 1 = input, rows 2..N = items, row N+1 = status
-        let availableRows = rows - 3  // 1 for input, 1 for status, 1 for spacing
+        // Layout: row 1 = input, row 2 = border, rows 3..N = items, row N+1 = status
+        let availableRows = rows - 4  // 1 for input, 1 for border, 1 for status, 1 for spacing
         let displayHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
 
         // Calculate layout based on preview mode
@@ -245,17 +268,20 @@ actor UIController {
         // Render input line (positions itself)
         buffer += renderInputLineToBuffer(cols: listWidth)
 
+        // Render border line below input
+        buffer += renderBorderLineToBuffer(cols: listWidth)
+
         // Render matched items (positions each line)
         buffer += renderItemListToBuffer(displayHeight: displayHeight, cols: listWidth)
 
         // Render status bar (positions itself)
-        buffer += renderStatusBarToBuffer(row: displayHeight + 2, cols: listWidth)
+        buffer += renderStatusBarToBuffer(row: displayHeight + 3, cols: listWidth)
 
         // Render split preview if enabled
         if showSplitPreview {
             buffer += renderSplitPreview(
-                startRow: 2,
-                endRow: displayHeight + 1,
+                startRow: 3,
+                endRow: displayHeight + 2,
                 startCol: previewStartCol,
                 width: previewWidth
             )
@@ -273,8 +299,49 @@ actor UIController {
 
     private func renderInputLineToBuffer(cols: Int) -> String {
         let prompt = "> "
-        let displayQuery = TextRenderer.truncate(state.query, width: cols - prompt.count - 1)
+        let availableWidth = cols - prompt.count - 1
+
+        // Build query with cursor
+        let query = state.query
+        let cursorPos = state.cursorPosition
+
+        // ANSI codes for cursor (inverted colors)
+        let cursorStart = "\u{001B}[7m"  // Reverse video
+        let cursorEnd = "\u{001B}[27m"   // Normal video
+
+        var displayText = ""
+
+        if query.isEmpty {
+            // Show cursor at empty position
+            displayText = cursorStart + " " + cursorEnd
+        } else {
+            // Insert cursor into query string
+            let queryChars = Array(query)
+            for (index, char) in queryChars.enumerated() {
+                if index == cursorPos {
+                    displayText += cursorStart + String(char) + cursorEnd
+                } else {
+                    displayText += String(char)
+                }
+            }
+
+            // If cursor is at the end, show space cursor
+            if cursorPos >= queryChars.count {
+                displayText += cursorStart + " " + cursorEnd
+            }
+        }
+
+        // Truncate if too long (preserving ANSI codes is handled by visual width)
+        let displayQuery = TextRenderer.truncate(displayText, width: availableWidth)
+
         return "\u{001B}[1;1H" + prompt + displayQuery + "\u{001B}[K"
+    }
+
+    private func renderBorderLineToBuffer(cols: Int) -> String {
+        let dimColor = "\u{001B}[2m"  // Dim/faint text
+        let resetColor = "\u{001B}[0m"
+        let border = String(repeating: "─", count: cols - 1)
+        return "\u{001B}[2;1H" + dimColor + border + resetColor + "\u{001B}[K"
     }
 
     private func renderItemListToBuffer(displayHeight: Int, cols: Int) -> String {
@@ -291,7 +358,7 @@ actor UIController {
 
         var buffer = ""
         for (displayIndex, matchedItem) in visibleItems.enumerated() {
-            let row = displayIndex + 2
+            let row = displayIndex + 3  // Start from row 3 (after input on row 1 and border on row 2)
             let actualIndex = startIndex + displayIndex
 
             let isSelected = state.selectedIndex == actualIndex
@@ -350,7 +417,7 @@ actor UIController {
         }
 
         // Add scroll indicator if there are more items than visible
-        let displayHeight = maxHeight ?? row - 2  // Approximate from row parameter
+        let displayHeight = maxHeight ?? row - 3  // Approximate from row parameter (status is at displayHeight + 3)
 
         if state.matchedItems.count > displayHeight {
             let scrollPercent = Int((Double(state.scrollOffset) / Double(max(1, state.matchedItems.count - displayHeight))) * 100)

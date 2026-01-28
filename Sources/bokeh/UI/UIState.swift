@@ -14,19 +14,51 @@ struct UIState: Sendable {
     var exitWithSelection: Bool = false
 
     mutating func addChar(_ char: Character) {
-        query.append(char)
-        cursorPosition = query.count
+        // Insert character at cursor position
+        let index = query.index(query.startIndex, offsetBy: cursorPosition)
+        query.insert(char, at: index)
+        cursorPosition += 1
     }
 
     mutating func deleteChar() {
-        guard !query.isEmpty else { return }
-        query.removeLast()
-        cursorPosition = query.count
+        // Delete character before cursor (backspace behavior)
+        guard cursorPosition > 0 else { return }
+        let index = query.index(query.startIndex, offsetBy: cursorPosition - 1)
+        query.remove(at: index)
+        cursorPosition -= 1
     }
 
     mutating func clearQuery() {
         query = ""
         cursorPosition = 0
+    }
+
+    mutating func moveCursorLeft() {
+        if cursorPosition > 0 {
+            cursorPosition -= 1
+        }
+    }
+
+    mutating func moveCursorRight() {
+        if cursorPosition < query.count {
+            cursorPosition += 1
+        }
+    }
+
+    mutating func moveCursorToStart() {
+        cursorPosition = 0
+    }
+
+    mutating func moveCursorToEnd() {
+        cursorPosition = query.count
+    }
+
+    mutating func deleteToEndOfLine() {
+        // Delete from cursor position to end of line (Emacs Ctrl-K behavior)
+        guard cursorPosition < query.count else { return }
+        let startIndex = query.index(query.startIndex, offsetBy: cursorPosition)
+        query.removeSubrange(startIndex..<query.endIndex)
+        // Cursor position stays the same (now at end)
     }
 
     mutating func moveUp(visibleHeight: Int) {

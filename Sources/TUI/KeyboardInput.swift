@@ -21,7 +21,12 @@ public enum Key: Equatable, Sendable {
     case ctrlC
     case ctrlD
     case ctrlU
+    case ctrlK  // Kill line (delete from cursor to end)
     case ctrlO  // Toggle preview
+    case ctrlA  // Move to beginning of line
+    case ctrlE  // Move to end of line
+    case ctrlF  // Move forward one character
+    case ctrlB  // Move backward one character
     case unknown
 }
 
@@ -62,23 +67,38 @@ public struct KeyboardInput {
         case 10, 13:  // LF or CR
             return .enter
 
+        case 1:  // Ctrl-A
+            return .ctrlA
+
+        case 2:  // Ctrl-B
+            return .ctrlB
+
         case 3:  // Ctrl-C
             return .ctrlC
 
         case 4:  // Ctrl-D
             return .ctrlD
 
-        case 21:  // Ctrl-U
-            return .ctrlU
+        case 5:  // Ctrl-E
+            return .ctrlE
 
-        case 16:  // Ctrl-P (previous/up)
-            return .up
+        case 6:  // Ctrl-F
+            return .ctrlF
+
+        case 11:  // Ctrl-K
+            return .ctrlK
 
         case 14:  // Ctrl-N (next/down)
             return .down
 
         case 15:  // Ctrl-O (toggle preview)
             return .ctrlO
+
+        case 16:  // Ctrl-P (previous/up)
+            return .up
+
+        case 21:  // Ctrl-U
+            return .ctrlU
 
         case 32...126:  // Printable ASCII
             return .char(Character(UnicodeScalar(firstByte)))
