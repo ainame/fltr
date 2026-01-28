@@ -1,11 +1,6 @@
 import Foundation
 import SystemPackage
-
-#if os(macOS)
-import Darwin
-#elseif os(Linux)
-import Glibc
-#endif
+import BokehCSystem
 
 /// TUI - A Swift Terminal User Interface library
 ///
@@ -63,13 +58,13 @@ public actor RawTerminal {
         originalTermios = raw
 
         // Disable canonical mode, echo, and signals
-        raw.c_lflag &= ~(UInt(ECHO | ICANON | ISIG | IEXTEN))
+        raw.c_lflag &= ~tcflag_t(ECHO | ICANON | ISIG | IEXTEN)
         // Disable input processing
-        raw.c_iflag &= ~(UInt(IXON | ICRNL | BRKINT | INPCK | ISTRIP))
+        raw.c_iflag &= ~tcflag_t(IXON | ICRNL | BRKINT | INPCK | ISTRIP)
         // Disable output processing
-        raw.c_oflag &= ~(UInt(OPOST))
+        raw.c_oflag &= ~tcflag_t(OPOST)
         // Set character size
-        raw.c_cflag |= UInt(CS8)
+        raw.c_cflag |= tcflag_t(CS8)
 
         // Non-blocking read with timeout
         raw.c_cc.16 = 0  // VMIN = 0
@@ -121,7 +116,10 @@ public actor RawTerminal {
         var w = winsize()
         // Use tty fd if available (works when stdout is piped)
         let fd = ttyFd?.rawValue ?? FileDescriptor.standardOutput.rawValue
-        guard ioctl(fd, TIOCGWINSZ, &w) == 0 else {
+        let result = withUnsafeMutablePointer(to: &w) { ptr in
+            bokeh_ioctl_TIOCGWINSZ(fd, ptr)
+        }
+        guard result == 0 else {
             throw TerminalError.failedToGetSize
         }
         return (Int(w.ws_row), Int(w.ws_col))
