@@ -20,7 +20,6 @@ import Glibc
 public actor RawTerminal {
     private var originalTermios: termios?
     private var ttyFd: FileDescriptor?
-    private let stdoutFd = FileDescriptor.standardOutput
     private var isRawMode = false
 
     public enum TerminalError: Error {
@@ -120,23 +119,34 @@ public actor RawTerminal {
     /// - Throws: `TerminalError.failedToGetSize` if size cannot be determined
     public func getSize() throws -> (rows: Int, cols: Int) {
         var w = winsize()
-        guard ioctl(stdoutFd.rawValue, TIOCGWINSZ, &w) == 0 else {
+        // Use tty fd if available (works when stdout is piped)
+        let fd = ttyFd?.rawValue ?? FileDescriptor.standardOutput.rawValue
+        guard ioctl(fd, TIOCGWINSZ, &w) == 0 else {
             throw TerminalError.failedToGetSize
         }
         return (Int(w.ws_row), Int(w.ws_col))
     }
 
-    /// Writes a string to stdout.
+    /// Writes a string to the terminal (tty).
+    /// Uses /dev/tty when available to avoid contaminating stdout (important for piping).
     ///
     /// - Parameter string: The string to write
     public func write(_ string: String) {
-        _ = try? stdoutFd.writeAll(string.utf8)
+        if let fd = ttyFd {
+            _ = try? fd.writeAll(string.utf8)
+        } else {
+            _ = try? FileDescriptor.standardOutput.writeAll(string.utf8)
+        }
     }
 
-    /// Flushes stdout buffer.
+    /// Flushes terminal output buffer.
     public func flush() {
-        // Standard C stdout works on both macOS and Linux
-        fflush(stdout)
+        // fsync the tty fd if available, otherwise use stdout
+        if let fd = ttyFd {
+            fsync(fd.rawValue)
+        } else {
+            fflush(stdout)
+        }
     }
 
     /// Reads a single byte from terminal input (non-blocking).

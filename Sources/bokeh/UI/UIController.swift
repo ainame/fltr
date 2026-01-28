@@ -35,11 +35,6 @@ actor UIController {
     /// Run the main UI loop
     func run() async throws -> [Item] {
         try await terminal.enterRawMode()
-        defer {
-            Task {
-                await terminal.exitRawMode()
-            }
-        }
 
         // Initial load (might be empty if stdin is slow)
         var allItems = await cache.getAllItems()
@@ -86,6 +81,10 @@ actor UIController {
                 try? await Task.sleep(for: .milliseconds(10))
             }
         }
+
+        // Exit raw mode synchronously before returning to ensure terminal is restored
+        // before any output is written to stdout
+        await terminal.exitRawMode()
 
         return state.getSelectedItems()
     }
