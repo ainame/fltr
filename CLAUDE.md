@@ -32,7 +32,12 @@ fltr (Executable)
 ├── Storage/      - ItemCache (actor), ChunkList with InlineArray
 ├── Engine/       - MatchingEngine (parallel matching via TaskGroup)
 ├── Reader/       - StdinReader (streaming, non-blocking)
-└── UI/           - UIController (event loop), UIState (view model)
+└── UI/           - Modular UI components
+    ├── UIController.swift     - Event loop orchestrator (actor, ~340 lines)
+    ├── InputHandler.swift     - Keyboard/mouse parsing & routing (~200 lines)
+    ├── UIRenderer.swift       - UI element rendering (~220 lines)
+    ├── PreviewManager.swift   - Preview command execution & rendering (~210 lines)
+    └── UIState.swift          - View model (state management)
     │
     └── depends on ──▶ TUI (Library)
                       ├── RawTerminal    - Raw mode, /dev/tty access
@@ -52,13 +57,45 @@ FltrCSystem (C Shim Library)
 
 - **MatchingEngine** (`Sources/fltr/Engine/MatchingEngine.swift`): Parallel matching using TaskGroup. Smart threshold: only parallelizes for >1000 items.
 
-- **UIController** (`Sources/fltr/UI/UIController.swift`): Main event loop with 100ms refresh interval for streaming data. Includes input field with cursor and Emacs-like key bindings.
+- **UIController** (`Sources/fltr/UI/UIController.swift`): Main event loop orchestrator with 100ms refresh interval for streaming data. Coordinates between InputHandler, UIRenderer, and PreviewManager components.
+
+- **InputHandler** (`Sources/fltr/UI/InputHandler.swift`): Parses keyboard/mouse events (escape sequences, arrow keys, mouse scrolling) and routes them to appropriate state updates.
+
+- **UIRenderer** (`Sources/fltr/UI/UIRenderer.swift`): Renders UI elements (input field with cursor, item list, status bar, borders) using single-buffer strategy for performance.
+
+- **PreviewManager** (`Sources/fltr/UI/PreviewManager.swift`): Executes preview commands with timeout and renders both split-screen (fzf style) and floating window previews.
 
 - **TUI library** (`Sources/TUI/`): Reusable terminal UI foundation that can be used independently.
 
 - **FltrCSystem** (`Sources/FltrCSystem/`): C shims for cross-platform POSIX APIs (ioctl, termios). Required for Linux musl compatibility.
 
-## UI Features
+## UI Architecture
+
+The UI is split into focused components with clear responsibilities:
+
+```
+Raw Input → UIController.handleKey()
+          ↓
+          InputHandler.parseEscapeSequence() → Key
+          ↓
+          InputHandler.handleKeyEvent() → InputAction + mutate UIState
+          ↓
+          UIController handles action:
+          - scheduleMatchUpdate: trigger debounced matching
+          - updatePreview: execute preview command
+          - updatePreviewScroll: adjust preview scroll offset
+          - togglePreview: show/hide preview window
+          ↓
+          UIController.render()
+          ↓
+          UIRenderer.assembleFrame() → buffer string
+          ↓
+          PreviewManager.renderPreview() → preview buffer (if enabled)
+          ↓
+          terminal.write(buffer)
+```
+
+### UI Features
 
 - **Input field with cursor**: Visual block cursor showing current position
 - **Emacs-like key bindings**:
@@ -69,6 +106,7 @@ FltrCSystem (C Shim Library)
   - Ctrl-U: Clear line
 - **Border below input**: Thin horizontal line separating input from results
 - **Preview windows**: Split-screen (fzf style) and floating overlay modes
+- **Mouse support**: Scroll events for both item list and preview windows
 
 ## Concurrency Model
 
