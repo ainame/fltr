@@ -367,11 +367,11 @@ actor UIController {
         // Clear screen
         buffer += "\u{001B}[2J"  // Clear entire screen
 
-        // Render input line (positions itself)
-        buffer += renderInputLineToBuffer(cols: listWidth)
+        // Render input line (positions itself) - use full width
+        buffer += renderInputLineToBuffer(cols: cols)
 
-        // Render border line below input
-        buffer += renderBorderLineToBuffer(cols: listWidth)
+        // Render border line below input - use full width
+        buffer += renderBorderLineToBuffer(cols: cols)
 
         // Render matched items (positions each line)
         buffer += renderItemListToBuffer(displayHeight: displayHeight, cols: listWidth)
