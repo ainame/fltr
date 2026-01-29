@@ -137,14 +137,57 @@ actor UIController {
         let finalKey: Key
         if case .escape = key, byte == 27 {
             // Check for arrow keys and other escape sequences
-            if let next = await terminal.readByte(), next == 91 {
+            if let next = await terminal.readByte(), next == 91 {  // '['
                 if let cmd = await terminal.readByte() {
-                    switch cmd {
-                    case 65: finalKey = .up
-                    case 66: finalKey = .down
-                    case 67: finalKey = .right
-                    case 68: finalKey = .left
-                    default: finalKey = .unknown
+                    // Handle mouse SGR mode: ESC[<...
+                    if cmd == 60 {  // '<'
+                        // Read until 'M' or 'm' to get button;col;row
+                        var buffer = ""
+                        var foundEnd = false
+
+                        // Read up to 50 bytes (safety limit)
+                        for _ in 0..<50 {
+                            if let byte = await terminal.readByte() {
+                                let char = Character(UnicodeScalar(byte))
+                                if char == "M" || char == "m" {
+                                    foundEnd = true
+                                    break
+                                }
+                                buffer.append(char)
+                            } else {
+                                break
+                            }
+                        }
+
+                        if foundEnd {
+                            // Parse button;col;row
+                            let parts = buffer.split(separator: ";").compactMap { Int($0) }
+                            if parts.count == 3 {
+                                let button = parts[0]
+                                let col = parts[1]
+                                let row = parts[2]
+
+                                // Handle scroll events (button 64 = scroll up, 65 = scroll down)
+                                switch button {
+                                case 64: finalKey = .mouseScrollUp(col: col, row: row)
+                                case 65: finalKey = .mouseScrollDown(col: col, row: row)
+                                default: finalKey = .unknown
+                                }
+                            } else {
+                                finalKey = .unknown
+                            }
+                        } else {
+                            finalKey = .unknown
+                        }
+                    } else {
+                        // Regular arrow keys
+                        switch cmd {
+                        case 65: finalKey = .up
+                        case 66: finalKey = .down
+                        case 67: finalKey = .right
+                        case 68: finalKey = .left
+                        default: finalKey = .unknown
+                        }
                     }
                 } else {
                     finalKey = .escape
