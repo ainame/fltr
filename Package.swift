@@ -12,6 +12,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-async-algorithms", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),
         .package(url: "https://github.com/ainame/swift-displaywidth", branch: "main"),
+        .package(url: "https://github.com/swiftlang/swift-subprocess", from: "0.3.0"),
     ],
     targets: [
         // FltrCSystem - C system library shims for cross-platform POSIX APIs
@@ -40,6 +41,7 @@ let package = Package(
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
                 .product(name: "Collections", package: "swift-collections"),
                 .product(name: "DisplayWidth", package: "swift-displaywidth"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
             ]
         ),
 

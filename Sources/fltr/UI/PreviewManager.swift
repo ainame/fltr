@@ -1,5 +1,6 @@
 import Foundation
 import TUI
+import Subprocess
 
 /// Manages preview command execution and rendering
 struct PreviewManager: Sendable {
@@ -15,38 +16,29 @@ struct PreviewManager: Sendable {
         // Execute via shell with timeout
         return await withTaskGroup(of: String.self) { group in
             group.addTask {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/bin/sh")
-                process.arguments = ["-c", expandedCommand]
-
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
-
                 do {
-                    try process.run()
+                    // Execute command with timeout using swift-subprocess
+                    let result = try await run(
+                        .name("/bin/sh"),
+                        arguments: ["-c", expandedCommand],
+                        output: .string(limit: 1_000_000),  // 1MB limit
+                        error: .discarded
+                    )
 
-                    // Read data in background
-                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                    process.waitUntilExit()
-
-                    // Limit output size to avoid memory issues
-                    let maxBytes = 1_000_000  // 1MB
-                    let limitedData = data.prefix(maxBytes)
-
-                    if let output = String(data: limitedData, encoding: .utf8) {
-                        // Limit lines too
-                        let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
-                        if lines.count > 1000 {
-                            return lines.prefix(1000).joined(separator: "\n") + "\n\n[Output truncated - showing first 1000 lines]"
-                        }
-                        return output
+                    // Get output string (may be nil if decoding fails)
+                    guard let output = result.standardOutput else {
+                        return ""
                     }
+
+                    // Limit lines
+                    let lines = output.split(separator: "\n", omittingEmptySubsequences: false)
+                    if lines.count > 1000 {
+                        return lines.prefix(1000).joined(separator: "\n") + "\n\n[Output truncated - showing first 1000 lines]"
+                    }
+                    return output
                 } catch {
                     return "Error: \(error.localizedDescription)"
                 }
-
-                return ""
             }
 
             // Timeout task
