@@ -7,6 +7,7 @@ import Foundation
 /// - Control keys (Ctrl-C, Ctrl-D, etc.)
 /// - Arrow keys and escape sequences
 /// - Special keys (Tab, Enter, Backspace, etc.)
+/// - Mouse events (scroll up/down with position)
 public enum Key: Equatable, Sendable {
     case char(Character)
     case backspace
@@ -27,6 +28,8 @@ public enum Key: Equatable, Sendable {
     case ctrlE  // Move to end of line
     case ctrlF  // Move forward one character
     case ctrlB  // Move backward one character
+    case mouseScrollUp(col: Int, row: Int)
+    case mouseScrollDown(col: Int, row: Int)
     case unknown
 }
 
@@ -48,6 +51,33 @@ public struct KeyboardInput {
 
             if next == 91 {  // [ for CSI sequences
                 guard let cmd = readNext() else { return .escape }
+
+                // Check for mouse SGR mode: ESC[<...
+                if cmd == 60 {  // '<' - SGR mouse mode
+                    // Read until 'M' or 'm' to get button;col;row
+                    var buffer = ""
+                    while let byte = readNext() {
+                        let char = Character(UnicodeScalar(byte))
+                        if char == "M" || char == "m" {
+                            // Parse button;col;row
+                            let parts = buffer.split(separator: ";").compactMap { Int($0) }
+                            guard parts.count == 3 else { return .unknown }
+                            let button = parts[0]
+                            let col = parts[1]
+                            let row = parts[2]
+
+                            // Handle scroll events (button 64 = scroll up, 65 = scroll down)
+                            switch button {
+                            case 64: return .mouseScrollUp(col: col, row: row)
+                            case 65: return .mouseScrollDown(col: col, row: row)
+                            default: return .unknown
+                            }
+                        }
+                        buffer.append(char)
+                    }
+                    return .unknown
+                }
+
                 switch cmd {
                 case 65: return .up      // ESC[A
                 case 66: return .down    // ESC[B

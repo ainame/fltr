@@ -21,6 +21,9 @@ actor UIController {
     private var previewScrollOffset: Int = 0  // Scroll offset for preview content
     private let multiSelect: Bool  // Whether Tab selection is enabled
 
+    // Preview window bounds for mouse hit testing (1-indexed, inclusive)
+    private var previewBounds: (startRow: Int, endRow: Int, startCol: Int, endCol: Int)?
+
     // Debounce support with AsyncSequence
     private let debounceDelay: Duration  // Delay before executing match after typing
     private let queryUpdateStream: AsyncStream<[Item]>
@@ -225,6 +228,28 @@ actor UIController {
                 }
             }
 
+        case .mouseScrollUp(let col, let row):
+            if isMouseOverPreview(col: col, row: row) {
+                // Scroll preview up (decrease offset)
+                previewScrollOffset = max(0, previewScrollOffset - 3)
+            } else {
+                // Scroll list up
+                state.moveUp(visibleHeight: visibleHeight)
+                await updatePreview()
+            }
+
+        case .mouseScrollDown(let col, let row):
+            if isMouseOverPreview(col: col, row: row) {
+                // Scroll preview down (increase offset)
+                let lines = cachedPreview.split(separator: "\n", omittingEmptySubsequences: false)
+                let maxOffset = max(0, lines.count - 1)
+                previewScrollOffset = min(maxOffset, previewScrollOffset + 3)
+            } else {
+                // Scroll list down
+                state.moveDown(visibleHeight: visibleHeight)
+                await updatePreview()
+            }
+
         default:
             break
         }
@@ -233,6 +258,13 @@ actor UIController {
     /// Emit query change event to debounced stream
     private func scheduleMatchUpdate(allItems: [Item]) {
         queryUpdateContinuation.yield(allItems)
+    }
+
+    /// Check if mouse position is over preview window
+    private func isMouseOverPreview(col: Int, row: Int) -> Bool {
+        guard let bounds = previewBounds else { return false }
+        return row >= bounds.startRow && row <= bounds.endRow &&
+               col >= bounds.startCol && col <= bounds.endCol
     }
 
     /// Incremental filtering: search within previous results if query is extended
@@ -306,17 +338,23 @@ actor UIController {
 
         // Render split preview if enabled
         if showSplitPreview {
+            let startRow = 3
+            let endRow = displayHeight + 2
+            // Store bounds for mouse hit testing (inclusive)
+            previewBounds = (startRow: startRow, endRow: endRow, startCol: previewStartCol, endCol: cols)
             buffer += renderSplitPreview(
-                startRow: 3,
-                endRow: displayHeight + 2,
+                startRow: startRow,
+                endRow: endRow,
                 startCol: previewStartCol,
                 width: previewWidth
             )
-        }
-
-        // Render floating preview window if enabled
-        if showFloatingPreview {
-            buffer += renderFloatingPreview(rows: rows, cols: cols)
+        } else if showFloatingPreview {
+            // Render floating preview window if enabled
+            let (floatingBounds, floatingBuffer) = renderFloatingPreview(rows: rows, cols: cols)
+            previewBounds = floatingBounds
+            buffer += floatingBuffer
+        } else {
+            previewBounds = nil
         }
 
         // Single write for entire frame
@@ -459,11 +497,19 @@ actor UIController {
         guard let command = previewCommand else { return }
         guard !state.matchedItems.isEmpty else {
             cachedPreview = ""
+            previewScrollOffset = 0
             return
         }
 
         let selectedItem = state.matchedItems[state.selectedIndex]
-        cachedPreview = await executePreviewCommand(command, item: selectedItem.item.text)
+        let newPreview = await executePreviewCommand(command, item: selectedItem.item.text)
+
+        // Reset scroll offset when preview content changes (new item selected)
+        if newPreview != cachedPreview {
+            previewScrollOffset = 0
+        }
+
+        cachedPreview = newPreview
     }
 
     /// Execute preview command with item text substitution
@@ -566,14 +612,15 @@ actor UIController {
             buffer += separatorColor + "│" + resetColor
         }
 
-        // Draw preview content
+        // Draw preview content with scroll offset
         for i in 0..<maxLines {
             let row = startRow + i
+            let lineIndex = previewScrollOffset + i
 
             buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
 
-            if i < lines.count {
-                let line = String(lines[i])
+            if lineIndex < lines.count {
+                let line = String(lines[lineIndex])
                 // Replace tabs with spaces
                 let lineWithoutTabs = line.replacingOccurrences(of: "\t", with: "    ")
                 let truncated = TextRenderer.truncate(lineWithoutTabs, width: width)
@@ -585,14 +632,18 @@ actor UIController {
     }
 
     /// Render floating window with borders for preview
-    private func renderFloatingPreview(rows: Int, cols: Int) -> String {
-        guard showFloatingPreview, previewCommand != nil else { return "" }
+    /// Returns bounds tuple and buffer string
+    private func renderFloatingPreview(rows: Int, cols: Int) -> ((startRow: Int, endRow: Int, startCol: Int, endCol: Int)?, String) {
+        guard showFloatingPreview, previewCommand != nil else { return (nil, "") }
 
         // Calculate window dimensions (80% of screen, centered)
         let windowWidth = Int(Double(cols) * 0.8)
         let windowHeight = Int(Double(rows) * 0.7)
         let startRow = (rows - windowHeight) / 2
         let startCol = (cols - windowWidth) / 2
+        let endRow = startRow + windowHeight - 1
+        let endCol = startCol + windowWidth - 1
+        let bounds = (startRow: startRow, endRow: endRow, startCol: startCol, endCol: endCol)
 
         // Swift orange for borders
         let borderColor = "\u{001B}[1;38;5;202m"
@@ -637,11 +688,12 @@ actor UIController {
                 // Content line with left/right borders (single line)
                 let contentWidth = windowWidth - 2
                 let contentIndex = i - 1
+                let lineIndex = previewScrollOffset + contentIndex
 
                 buffer += borderColor + "│" + resetColor
 
-                if contentIndex < lines.count {
-                    let line = String(lines[contentIndex])
+                if lineIndex < lines.count {
+                    let line = String(lines[lineIndex])
                     // Replace tabs with spaces to avoid width calculation issues
                     let lineWithoutTabs = line.replacingOccurrences(of: "\t", with: "    ")
                     let truncated = TextRenderer.truncate(lineWithoutTabs, width: contentWidth)
@@ -655,6 +707,6 @@ actor UIController {
             }
         }
 
-        return buffer
+        return (bounds, buffer)
     }
 }

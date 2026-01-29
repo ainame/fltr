@@ -79,6 +79,9 @@ public actor RawTerminal {
         write("\u{001B}[?1049h")
         // Hide cursor
         write("\u{001B}[?25l")
+        // Enable mouse tracking (SGR mode with scroll events)
+        write("\u{001B}[?1000h")  // Enable mouse tracking
+        write("\u{001B}[?1006h")  // Enable SGR extended mouse mode
         // Clear screen
         write("\u{001B}[2J")
         flush()
@@ -93,6 +96,9 @@ public actor RawTerminal {
     public func exitRawMode() {
         guard isRawMode else { return }
 
+        // Disable mouse tracking
+        write("\u{001B}[?1006l")  // Disable SGR extended mouse mode
+        write("\u{001B}[?1000l")  // Disable mouse tracking
         // Show cursor
         write("\u{001B}[?25h")
         // Exit alternate screen buffer
