@@ -106,7 +106,9 @@ public actor RawTerminal {
         flush()
 
         if let fd = ttyFd, var original = originalTermios {
-            tcsetattr(fd.rawValue, TCSAFLUSH, &original)
+            // Use TCSADRAIN instead of TCSAFLUSH to wait for output to complete
+            // before changing settings. TCSAFLUSH would discard pending escape sequences.
+            tcsetattr(fd.rawValue, TCSADRAIN, &original)
             try? fd.close()
         }
 
