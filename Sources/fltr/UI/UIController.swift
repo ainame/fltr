@@ -1,5 +1,6 @@
 import Foundation
 import TUI
+import AsyncAlgorithms
 
 /// Main UI controller - event loop and rendering
 actor UIController {
@@ -20,7 +21,12 @@ actor UIController {
     private var previewScrollOffset: Int = 0  // Scroll offset for preview content
     private let multiSelect: Bool  // Whether Tab selection is enabled
 
-    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false) {
+    // Debounce support with AsyncSequence
+    private let debounceDelay: Duration  // Delay before executing match after typing
+    private let queryUpdateStream: AsyncStream<[Item]>
+    private let queryUpdateContinuation: AsyncStream<[Item]>.Continuation
+
+    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(100)) {
         self.terminal = terminal
         self.matcher = matcher
         self.engine = MatchingEngine(matcher: matcher)
@@ -32,6 +38,13 @@ actor UIController {
         self.useFloatingPreview = useFloatingPreview
         // Split preview starts enabled if we have a preview command and not using floating mode
         self.showSplitPreview = previewCommand != nil && !useFloatingPreview
+        self.debounceDelay = debounceDelay
+
+        // Create AsyncStream for query changes
+        var continuation: AsyncStream<[Item]>.Continuation!
+        let stream = AsyncStream<[Item]> { continuation = $0 }
+        self.queryUpdateStream = stream
+        self.queryUpdateContinuation = continuation
     }
 
     /// Run the main UI loop
@@ -50,6 +63,15 @@ actor UIController {
 
         var lastRefresh = Date()
         let refreshInterval: TimeInterval = 0.1  // Refresh every 100ms when new items arrive
+
+        // Start debounced query update task
+        let debounceTask = Task {
+            for await allItems in queryUpdateStream.debounce(for: debounceDelay) {
+                await updateMatchesIncremental(allItems: allItems)
+                await updatePreview()
+                await render()
+            }
+        }
 
         // Main event loop
         while !state.shouldExit {
@@ -71,7 +93,7 @@ actor UIController {
                         lastItemCount = currentCount
                         state.totalItems = currentCount
 
-                        // Re-run current query with new items
+                        // Re-run current query with new items (bypasses debounce)
                         await updateMatchesIncremental(allItems: allItems)
                         await render()
 
@@ -83,6 +105,10 @@ actor UIController {
                 try? await Task.sleep(for: .milliseconds(10))
             }
         }
+
+        // Clean up debounce task
+        queryUpdateContinuation.finish()
+        debounceTask.cancel()
 
         // Exit raw mode synchronously before returning to ensure terminal is restored
         // before any output is written to stdout
@@ -130,13 +156,11 @@ actor UIController {
         switch finalKey {
         case .char(let char):
             state.addChar(char)
-            await updateMatchesIncremental(allItems: allItems)
-            await updatePreview()
+            scheduleMatchUpdate(allItems: allItems)
 
         case .backspace:
             state.deleteChar()
-            await updateMatchesIncremental(allItems: allItems)
-            await updatePreview()
+            scheduleMatchUpdate(allItems: allItems)
 
         case .enter:
             state.shouldExit = true
@@ -148,13 +172,11 @@ actor UIController {
 
         case .ctrlU:
             state.clearQuery()
-            await updateMatchesIncremental(allItems: allItems)
-            await updatePreview()
+            scheduleMatchUpdate(allItems: allItems)
 
         case .ctrlK:
             state.deleteToEndOfLine()
-            await updateMatchesIncremental(allItems: allItems)
-            await updatePreview()
+            scheduleMatchUpdate(allItems: allItems)
 
         case .ctrlA:
             state.moveCursorToStart()
@@ -206,6 +228,11 @@ actor UIController {
         default:
             break
         }
+    }
+
+    /// Emit query change event to debounced stream
+    private func scheduleMatchUpdate(allItems: [Item]) {
+        queryUpdateContinuation.yield(allItems)
     }
 
     /// Incremental filtering: search within previous results if query is extended
