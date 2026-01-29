@@ -78,6 +78,8 @@ actor UIController {
     func run() async throws -> [Item] {
         try await terminal.enterRawMode()
 
+        // Note: Terminal cleanup is guaranteed by RawTerminal's deinit,
+        // but we explicitly call exitRawMode() for proper cleanup
         // Initial load (might be empty if stdin is slow)
         var allItems = await cache.getAllItems()
         lastItemCount = allItems.count

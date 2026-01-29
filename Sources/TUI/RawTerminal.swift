@@ -1,6 +1,7 @@
 import Foundation
 import SystemPackage
 import FltrCSystem
+import Synchronization
 
 /// TUI - A Swift Terminal User Interface library
 ///
@@ -17,6 +18,14 @@ public actor RawTerminal {
     private var ttyFd: FileDescriptor?
     private var isRawMode = false
 
+    // Cleanup state that needs to be accessed from nonisolated context (protected by Mutex)
+    private let cleanupState = Mutex<CleanupState?>(nil)
+
+    private struct CleanupState: Sendable {
+        let fd: FileDescriptor
+        let termios: termios
+    }
+
     public enum TerminalError: Error {
         case failedToGetAttributes
         case failedToSetAttributes
@@ -26,6 +35,11 @@ public actor RawTerminal {
     }
 
     public init() {}
+
+    deinit {
+        // Safety net: ensure terminal is restored even if exitRawMode() wasn't called
+        performCleanup()
+    }
 
     /// Enters raw terminal mode and activates the alternate screen buffer.
     ///
@@ -75,6 +89,9 @@ public actor RawTerminal {
             throw TerminalError.failedToSetAttributes
         }
 
+        // Save cleanup state for deinit safety net
+        cleanupState.withLock { $0 = CleanupState(fd: fd, termios: originalTermios!) }
+
         // Enter alternate screen buffer
         write("\u{001B}[?1049h")
         // Hide cursor
@@ -114,6 +131,30 @@ public actor RawTerminal {
 
         isRawMode = false
         ttyFd = nil
+
+        // Clear cleanup state since we've cleaned up properly
+        cleanupState.withLock { $0 = nil }
+    }
+
+    /// Nonisolated cleanup method that can be called from deinit
+    /// This is a safety net in case exitRawMode() is never called
+    nonisolated private func performCleanup() {
+        let state = cleanupState.withLock { state in
+            defer { state = nil }
+            return state
+        }
+
+        guard let state else { return }
+
+        // Write cleanup sequences directly to fd
+        let cleanupSequence = "\u{001B}[?1006l\u{001B}[?1000l\u{001B}[?25h\u{001B}[?1049l"
+        _ = try? state.fd.writeAll(cleanupSequence.utf8)
+        fsync(state.fd.rawValue)
+
+        // Restore terminal attributes
+        var termios = state.termios
+        tcsetattr(state.fd.rawValue, TCSADRAIN, &termios)
+        try? state.fd.close()
     }
 
     /// Gets the current terminal size.
@@ -189,6 +230,4 @@ public actor RawTerminal {
     public func clearLine() {
         write("\u{001B}[2K")
     }
-
-    // Note: deinit cannot be async, so cleanup must be done explicitly via exitRawMode()
 }
