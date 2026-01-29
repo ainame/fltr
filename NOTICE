@@ -1,5 +1,5 @@
-bokeh - A fuzzy finder for the terminal
-Copyright (c) 2026 bokeh contributors
+fltr - A fuzzy finder for the terminal
+Copyright (c) 2026 fltr contributors
 
 This project includes algorithms and concepts inspired by the following projects:
 
@@ -10,14 +10,14 @@ https://github.com/junegunn/fzf
 Copyright (c) 2013-2024 Junegunn Choi
 Licensed under the MIT License
 
-The fuzzy matching algorithm (FuzzyMatchV2) in bokeh is inspired by and based
+The fuzzy matching algorithm (FuzzyMatchV2) in fltr is inspired by and based
 on the fuzzy matching algorithm from fzf. The scoring constants, bonus system,
 and character classification approach are derived from fzf's implementation.
 
 Specific inspired components:
-- Sources/bokeh/Matcher/Algorithm.swift - FuzzyMatchV2 algorithm
-- Sources/bokeh/Matcher/CharClass.swift - Character classification
-- Sources/bokeh/Storage/Chunk.swift - Chunk-based storage design
+- Sources/fltr/Matcher/Algorithm.swift - FuzzyMatchV2 algorithm
+- Sources/fltr/Matcher/CharClass.swift - Character classification
+- Sources/fltr/Storage/Chunk.swift - Chunk-based storage design
 
 MIT License text for fzf:
 Permission is hereby granted, free of charge, to any person obtaining a copy
