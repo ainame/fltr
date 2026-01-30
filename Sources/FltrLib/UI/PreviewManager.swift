@@ -13,11 +13,11 @@ struct PreviewManager: Sendable {
         let escapedItem = item.replacingOccurrences(of: "'", with: "'\\''")
         let expandedCommand = command.replacingOccurrences(of: "{}", with: "'\(escapedItem)'")
 
-        // Execute via shell with timeout
-        return await withTaskGroup(of: String.self) { group in
-            group.addTask {
-                do {
-                    // Execute command with timeout using swift-subprocess
+        // Execute via shell with timeout using throwing task group to avoid race condition
+        do {
+            return try await withThrowingTaskGroup(of: String.self) { group in
+                group.addTask {
+                    // Execute command using swift-subprocess
                     let result = try await run(
                         .name("/bin/sh"),
                         arguments: ["-c", expandedCommand],
@@ -36,26 +36,28 @@ struct PreviewManager: Sendable {
                         return lines.prefix(1000).joined(separator: "\n") + "\n\n[Output truncated - showing first 1000 lines]"
                     }
                     return output
-                } catch {
-                    return "Error: \(error.localizedDescription)"
                 }
-            }
 
-            // Timeout task
-            group.addTask {
-                try? await Task.sleep(for: .seconds(2))
-                return "[Preview timeout - command took too long]"
-            }
+                // Timeout task that throws to distinguish from command completion
+                group.addTask {
+                    try await Task.sleep(for: .seconds(2))
+                    throw TimeoutError()
+                }
 
-            // Return first result (either success or timeout)
-            if let result = await group.next() {
+                // Return first completed result, cancel the other
+                let result = try await group.next()!
                 group.cancelAll()
                 return result
             }
-
-            return "[Preview failed]"
+        } catch is TimeoutError {
+            return "[Preview timeout - command took too long]"
+        } catch {
+            return "Error: \(error.localizedDescription)"
         }
     }
+
+    /// Error type to distinguish timeout from command failures
+    private struct TimeoutError: Error {}
 
     /// Render split-screen preview (fzf style)
     func renderSplitPreview(
