@@ -126,7 +126,13 @@ struct FuzzyMatchV2: Sendable {
         return MatchResult(score: bestScore, positions: positions)
     }
 
+    // Optimized pre-filter: check if all pattern chars exist in text
+    // This is called for EVERY item, so optimization here helps a lot
     private static func containsAllChars(pattern: [Character], text: [Character]) -> Bool {
+        // Fast path: if pattern is longer than text, can't match
+        guard pattern.count <= text.count else { return false }
+
+        // Simple sequential scan
         var textIndex = 0
         for patternChar in pattern {
             while textIndex < text.count && text[textIndex] != patternChar {
