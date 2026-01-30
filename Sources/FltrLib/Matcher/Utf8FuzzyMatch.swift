@@ -10,6 +10,33 @@ public struct Utf8FuzzyMatch: Sendable {
     static let bonusConsecutive = 4
     static let bonusFirstCharMultiplier = 2
 
+    /// Reusable matrix buffer to avoid repeated allocations
+    final class MatrixBuffer: @unchecked Sendable {
+        var H: [[Int]] = []
+        var lastMatch: [[Int]] = []
+
+        func resize(patternLen: Int, textLen: Int) {
+            let neededRows = patternLen + 1
+            let neededCols = textLen + 1
+
+            if H.count < neededRows || H[0].count < neededCols {
+                H = Array(repeating: Array(repeating: 0, count: neededCols), count: neededRows)
+                lastMatch = Array(repeating: Array(repeating: 0, count: neededCols), count: neededRows)
+            }
+        }
+
+        func clear(patternLen: Int, textLen: Int) {
+            for i in 0...patternLen {
+                for j in 0...textLen {
+                    H[i][j] = Int.min / 2
+                    lastMatch[i][j] = -1
+                }
+            }
+        }
+    }
+
+    @TaskLocal static var matrixBuffer: MatrixBuffer?
+
     /// Byte-level character classification
     @inlinable
     static func classify(_ byte: UInt8) -> CharClass {
@@ -105,13 +132,14 @@ public struct Utf8FuzzyMatch: Sendable {
             charClasses[i] = classify(textSpan[i])
         }
 
-        // Allocate DP matrices (simple allocation is faster than reuse for small matrices)
-        var H = [[Int]](repeating: [Int](repeating: Int.min / 2, count: textLen + 1), count: patternLen + 1)
-        var lastMatch = [[Int]](repeating: [Int](repeating: -1, count: textLen + 1), count: patternLen + 1)
+        // Use buffer reuse for better performance in parallel contexts
+        let buffer = matrixBuffer ?? MatrixBuffer()
+        buffer.resize(patternLen: patternLen, textLen: textLen)
+        buffer.clear(patternLen: patternLen, textLen: textLen)
 
         // Initialize: empty pattern matches with score 0
         for j in 0...textLen {
-            H[0][j] = 0
+            buffer.H[0][j] = 0
         }
 
         // Fill DP table using byte-level comparisons
@@ -131,15 +159,15 @@ public struct Utf8FuzzyMatch: Sendable {
                     }
 
                     // Check for consecutive match
-                    let consecutiveBonus = (lastMatch[i - 1][j - 1] == j - 2) ? bonusConsecutive : 0
+                    let consecutiveBonus = (buffer.lastMatch[i - 1][j - 1] == j - 2) ? bonusConsecutive : 0
 
-                    let matchScore = H[i - 1][j - 1] + scoreMatch + bonus + consecutiveBonus
-                    H[i][j] = matchScore
-                    lastMatch[i][j] = j - 1
+                    let matchScore = buffer.H[i - 1][j - 1] + scoreMatch + bonus + consecutiveBonus
+                    buffer.H[i][j] = matchScore
+                    buffer.lastMatch[i][j] = j - 1
                 } else {
                     // Gap: carry forward best score from left
-                    H[i][j] = H[i][j - 1] + scoreGapExtension
-                    lastMatch[i][j] = lastMatch[i][j - 1]
+                    buffer.H[i][j] = buffer.H[i][j - 1] + scoreGapExtension
+                    buffer.lastMatch[i][j] = buffer.lastMatch[i][j - 1]
                 }
             }
         }
@@ -148,8 +176,8 @@ public struct Utf8FuzzyMatch: Sendable {
         var bestScore = Int.min
         var bestCol = -1
         for j in patternLen...textLen {
-            if H[patternLen][j] > bestScore {
-                bestScore = H[patternLen][j]
+            if buffer.H[patternLen][j] > bestScore {
+                bestScore = buffer.H[patternLen][j]
                 bestCol = j
             }
         }
@@ -159,7 +187,7 @@ public struct Utf8FuzzyMatch: Sendable {
         }
 
         // Backtrack to find match positions
-        let positions = backtrack(H: H, lastMatch: lastMatch, patternLen: patternLen, endCol: bestCol)
+        let positions = backtrack(H: buffer.H, lastMatch: buffer.lastMatch, patternLen: patternLen, endCol: bestCol)
 
         return MatchResult(score: bestScore, positions: positions)
     }

@@ -34,7 +34,7 @@ struct MatchingEngine: Sendable {
 
         // Small dataset - use single-threaded with buffer reuse
         if items.count < parallelThreshold {
-            return FuzzyMatchV2.$matrixBuffer.withValue(FuzzyMatchV2.MatrixBuffer()) {
+            return Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
                 matcher.matchItems(pattern: pattern, items: items)
             }
         }
@@ -51,7 +51,7 @@ struct MatchingEngine: Sendable {
                     guard !Task.isCancelled else { return [] }
 
                     // Each task gets its own matrix buffer for reuse
-                    return FuzzyMatchV2.$matrixBuffer.withValue(FuzzyMatchV2.MatrixBuffer()) {
+                    return Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
                         var matched: [MatchedItem] = []
                         for item in partition {
                             // Yield cooperatively every 100 items to allow cancellation

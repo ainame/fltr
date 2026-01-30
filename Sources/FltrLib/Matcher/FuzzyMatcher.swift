@@ -20,7 +20,7 @@ struct FuzzyMatcher: Sendable {
 
         // Single token - use standard matching
         if tokens.count == 1 {
-            return FuzzyMatchV2.match(pattern: tokens[0], text: text, caseSensitive: caseSensitive)
+            return Utf8FuzzyMatch.match(pattern: tokens[0], text: text, caseSensitive: caseSensitive)
         }
 
         // Multiple tokens - all must match (AND behavior)
@@ -28,7 +28,7 @@ struct FuzzyMatcher: Sendable {
         var allPositions: [Int] = []
 
         for token in tokens {
-            guard let result = FuzzyMatchV2.match(pattern: token, text: text, caseSensitive: caseSensitive) else {
+            guard let result = Utf8FuzzyMatch.match(pattern: token, text: text, caseSensitive: caseSensitive) else {
                 // If any token doesn't match, the whole pattern doesn't match
                 return nil
             }
