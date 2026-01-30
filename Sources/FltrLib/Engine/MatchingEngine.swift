@@ -21,6 +21,15 @@ struct MatchingEngine: Sendable {
             return items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: [])) }
         }
 
+        // fzf optimization: Use exact substring match for very short patterns (much faster!)
+        // Fuzzy matching 827k items with "a" takes 4s, substring search takes ~200ms
+        let trimmedPattern = pattern.trimmingCharacters(in: .whitespaces)
+        let useExactMatch = trimmedPattern.count <= 2 && !trimmedPattern.contains(" ")
+
+        if useExactMatch {
+            return await exactSubstringMatch(pattern: trimmedPattern, items: items)
+        }
+
         // Small dataset - use single-threaded with buffer reuse
         if items.count < parallelThreshold {
             return FuzzyMatchV2.$matrixBuffer.withValue(FuzzyMatchV2.MatrixBuffer()) {
@@ -84,6 +93,68 @@ struct MatchingEngine: Sendable {
                 return topN(from: allMatches, count: maxResults)
             } else {
                 // Small result set - just sort normally
+                allMatches.sort { $0.matchResult.score > $1.matchResult.score }
+                return allMatches
+            }
+        }
+    }
+
+    /// Fast exact substring matching for short patterns (fzf optimization)
+    /// Much faster than fuzzy matching for 1-2 character patterns
+    private func exactSubstringMatch(pattern: String, items: [Item]) async -> [MatchedItem] {
+        let lowercasePattern = pattern.lowercased()
+
+        // Parallel substring search
+        let cpuCount = ProcessInfo.processInfo.activeProcessorCount
+        let partitionSize = max(1000, items.count / cpuCount)
+
+        return await withTaskGroup(of: [MatchedItem].self) { group in
+            for partition in items.chunked(into: partitionSize) {
+                group.addTask {
+                    guard !Task.isCancelled else { return [] }
+
+                    var matched: [MatchedItem] = []
+                    for item in partition {
+                        // Fast case-insensitive substring check
+                        if item.text.lowercased().contains(lowercasePattern) {
+                            // Simple scoring: prefer matches at start, shorter strings
+                            let position = item.text.lowercased().range(of: lowercasePattern)?.lowerBound.utf16Offset(in: item.text) ?? 0
+                            let score = 1000 - position - item.text.count / 10
+
+                            let positions = Array(position..<(position + pattern.count))
+                            matched.append(MatchedItem(
+                                item: item,
+                                matchResult: MatchResult(score: score, positions: positions)
+                            ))
+                        }
+
+                        // Cooperative cancellation
+                        if matched.count % 100 == 0 {
+                            guard !Task.isCancelled else { return [] }
+                        }
+                    }
+                    return matched
+                }
+            }
+
+            // Collect with early termination
+            var allMatches: [MatchedItem] = []
+            allMatches.reserveCapacity(min(items.count, maxResults * 2))
+
+            for await partitionResults in group {
+                guard !Task.isCancelled else { break }
+                allMatches.append(contentsOf: partitionResults)
+
+                if allMatches.count >= maxResults + (maxResults / 2) {
+                    group.cancelAll()
+                    break
+                }
+            }
+
+            // Limit and sort
+            if allMatches.count > maxResults {
+                return topN(from: allMatches, count: maxResults)
+            } else {
                 allMatches.sort { $0.matchResult.score > $1.matchResult.score }
                 return allMatches
             }
