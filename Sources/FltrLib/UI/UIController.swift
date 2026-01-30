@@ -3,11 +3,10 @@ import TUI
 import AsyncAlgorithms
 
 /// Query update message for matching
+/// Lightweight - only contains queries, not item arrays
 struct QueryUpdate: Sendable {
     let query: String
     let previousQuery: String
-    let allItems: [Item]
-    let currentMatches: [MatchedItem]
 }
 
 /// Main UI controller - event loop and rendering
@@ -58,6 +57,9 @@ actor UIController {
     // Pending render flag - ensures we don't queue up multiple renders
     private var renderScheduled = false
 
+    // Cached reference to all items (updated when new items arrive)
+    private var allItems: [Item] = []
+
     init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(100)) {
         self.terminal = terminal
         self.matcher = matcher
@@ -101,10 +103,10 @@ actor UIController {
         // Note: Terminal cleanup is guaranteed by RawTerminal's deinit,
         // but we explicitly call exitRawMode() for proper cleanup
         // Initial load (might be empty if stdin is slow)
-        var allItems = await cache.getAllItems()
-        lastItemCount = allItems.count
-        state.totalItems = allItems.count
-        let initialMatches = await engine.matchItemsParallel(pattern: "", items: allItems)
+        self.allItems = await cache.getAllItems()
+        lastItemCount = self.allItems.count
+        state.totalItems = self.allItems.count
+        let initialMatches = await engine.matchItemsParallel(pattern: "", items: self.allItems)
         state.updateMatches(initialMatches)
 
         await updatePreview()
@@ -120,6 +122,10 @@ actor UIController {
                 // Cancel any previous matching task
                 currentMatchTask?.cancel()
 
+                // Read current state from actor (quick)
+                let itemsSnapshot = self.allItems
+                let currentMatches = self.state.matchedItems
+
                 // Run matching completely outside the actor (nonisolated)
                 currentMatchTask = Task.detached {
                     // Determine search items based on incremental filtering
@@ -127,7 +133,7 @@ actor UIController {
                                            update.query.hasPrefix(update.previousQuery) &&
                                            update.query.count > update.previousQuery.count
 
-                    let searchItems = canUseIncremental ? update.currentMatches.map { $0.item } : update.allItems
+                    let searchItems = canUseIncremental ? currentMatches.map { $0.item } : itemsSnapshot
 
                     // Match items (this is the expensive operation)
                     let results = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
@@ -155,7 +161,7 @@ actor UIController {
             isReadingStdin = await !reader.readingComplete()
 
             if let byte = await terminal.readByte() {
-                await handleKey(byte: byte, allItems: allItems)
+                await handleKey(byte: byte)
                 scheduleRender()  // Non-blocking render
             } else {
                 // No keyboard input - check if new items arrived
@@ -210,7 +216,7 @@ actor UIController {
                         // Update allItems when task completes (if not cancelled)
                         Task {
                             if let newItems = await fetchItemsTask?.value {
-                                allItems = newItems
+                                self.allItems = newItems
                             }
                         }
 
@@ -239,7 +245,7 @@ actor UIController {
         return state.getSelectedItems()
     }
 
-    private func handleKey(byte: UInt8, allItems: [Item]) async {
+    private func handleKey(byte: UInt8) async {
         // Calculate visible height for scrolling
         let (rows, _) = (try? await terminal.getSize()) ?? (24, 80)
         let availableRows = rows - 4  // Account for input, border, status, and spacing
@@ -265,7 +271,7 @@ actor UIController {
             break
 
         case .scheduleMatchUpdate:
-            scheduleMatchUpdate(allItems: allItems)
+            scheduleMatchUpdate()
 
         case .updatePreview:
             // Cancel previous preview task
@@ -310,12 +316,11 @@ actor UIController {
     }
 
     /// Emit query change event to debounced stream
-    private func scheduleMatchUpdate(allItems: [Item]) {
+    /// Only sends query strings - avoids copying large arrays
+    private func scheduleMatchUpdate() {
         let update = QueryUpdate(
             query: state.query,
-            previousQuery: state.previousQuery,
-            allItems: allItems,
-            currentMatches: state.matchedItems
+            previousQuery: state.previousQuery
         )
         queryUpdateContinuation.yield(update)
     }
