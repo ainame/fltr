@@ -12,6 +12,10 @@ struct FuzzyMatchV2: Sendable {
 
     /// Reusable matrix buffer to avoid repeated allocations
     /// Each task gets its own buffer via TaskLocal storage
+    ///
+    /// Safety: Marked @unchecked Sendable because instances are never shared across tasks.
+    /// Each task creates its own buffer via TaskLocal storage, guaranteeing exclusive access.
+    /// No concurrent mutation is possible since TaskLocal provides task-isolated storage.
     final class MatrixBuffer: @unchecked Sendable {
         var H: [[Int]] = []
         var lastMatch: [[Int]] = []
