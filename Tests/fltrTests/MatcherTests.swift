@@ -1,5 +1,5 @@
 import Testing
-@testable import fltr
+@testable import FltrLib
 
 // MARK: - Basic Matching Tests
 
