@@ -55,6 +55,9 @@ actor UIController {
     // Background task for fetching new items
     private var fetchItemsTask: Task<[Item], Never>?
 
+    // Pending render flag - ensures we don't queue up multiple renders
+    private var renderScheduled = false
+
     init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(100)) {
         self.terminal = terminal
         self.matcher = matcher
@@ -153,7 +156,7 @@ actor UIController {
 
             if let byte = await terminal.readByte() {
                 await handleKey(byte: byte, allItems: allItems)
-                await render()
+                scheduleRender()  // Non-blocking render
             } else {
                 // No keyboard input - check if new items arrived
                 let currentCount = await cache.count()
@@ -343,6 +346,18 @@ actor UIController {
             previewScrollOffset = 0
         }
         cachedPreview = preview
+    }
+
+    /// Schedule a render without blocking (fire and forget)
+    /// Only schedules if no render is already pending to avoid queueing
+    private func scheduleRender() {
+        guard !renderScheduled else { return }
+        renderScheduled = true
+
+        Task {
+            await render()
+            renderScheduled = false
+        }
     }
 
     /// Incremental filtering: search within previous results if query is extended

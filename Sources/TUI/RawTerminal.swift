@@ -188,7 +188,8 @@ public actor RawTerminal {
 
     /// Flushes terminal output buffer.
     public func flush() {
-        // fsync the tty fd if available, otherwise use stdout
+        // Note: fsync on TTY may not be necessary but ensures output is visible
+        // Consider removing if performance is critical
         if let fd = ttyFd {
             fsync(fd.rawValue)
         } else {
