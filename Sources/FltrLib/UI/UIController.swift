@@ -140,6 +140,16 @@ actor UIController {
 
                     let searchItems = canUseIncremental ? currentMatches.map { $0.item } : allItems
 
+                    // Debug: log why incremental was/wasn't used
+                    if !canUseIncremental && !update.previousQuery.isEmpty {
+                        let logMsg = "  [DEBUG] Incremental skipped: prev='\(update.previousQuery)' query='\(update.query)' hasPrefix=\(update.query.hasPrefix(update.previousQuery)) longerQuery=\(update.query.count > update.previousQuery.count)\n"
+                        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/fltr-perf.log")) {
+                            handle.seekToEndOfFile()
+                            handle.write(logMsg.data(using: .utf8)!)
+                            try? handle.close()
+                        }
+                    }
+
                     // Match items (this is the expensive operation)
                     let matchStart = Date()
                     let results = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
