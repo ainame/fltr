@@ -122,18 +122,19 @@ actor UIController {
                 // Cancel any previous matching task
                 currentMatchTask?.cancel()
 
-                // Read current state from actor (quick)
-                let itemsSnapshot = self.allItems
-                let currentMatches = self.state.matchedItems
-
                 // Run matching completely outside the actor (nonisolated)
+                // Don't copy arrays - read from actor inside Task.detached when needed
                 currentMatchTask = Task.detached {
+                    // Read state from actor (this creates a copy, but only once per debounce)
+                    let allItems = await self.allItems
+                    let currentMatches = await self.state.matchedItems
+
                     // Determine search items based on incremental filtering
                     let canUseIncremental = !update.previousQuery.isEmpty &&
                                            update.query.hasPrefix(update.previousQuery) &&
                                            update.query.count > update.previousQuery.count
 
-                    let searchItems = canUseIncremental ? currentMatches.map { $0.item } : itemsSnapshot
+                    let searchItems = canUseIncremental ? currentMatches.map { $0.item } : allItems
 
                     // Match items (this is the expensive operation)
                     let results = await engine.matchItemsParallel(pattern: update.query, items: searchItems)

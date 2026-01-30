@@ -57,12 +57,22 @@ struct MatchingEngine: Sendable {
                 }
             }
 
-            // Collect results from all tasks
+            // Collect results from all tasks with early termination
             var allMatches: [MatchedItem] = []
+            // Reserve capacity for better performance
+            allMatches.reserveCapacity(min(items.count, maxResults * 2))
+
             for await partitionResults in group {
                 // Check cancellation while collecting results
                 guard !Task.isCancelled else { break }
                 allMatches.append(contentsOf: partitionResults)
+
+                // Aggressive early termination: stop as soon as we have enough candidates
+                // We need some buffer (1.5x) because we haven't sorted yet
+                if allMatches.count >= maxResults + (maxResults / 2) {
+                    group.cancelAll()
+                    break
+                }
             }
 
             // Limit and sort results for performance
