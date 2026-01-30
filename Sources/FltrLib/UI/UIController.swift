@@ -125,9 +125,13 @@ actor UIController {
                 // Run matching completely outside the actor (nonisolated)
                 // Don't copy arrays - read from actor inside Task.detached when needed
                 currentMatchTask = Task.detached {
+                    let overallStart = Date()
+
                     // Read state from actor (this creates a copy, but only once per debounce)
+                    let readStart = Date()
                     let allItems = await self.allItems
                     let currentMatches = await self.state.matchedItems
+                    let readTime = Date().timeIntervalSince(readStart) * 1000
 
                     // Determine search items based on incremental filtering
                     let canUseIncremental = !update.previousQuery.isEmpty &&
@@ -137,7 +141,16 @@ actor UIController {
                     let searchItems = canUseIncremental ? currentMatches.map { $0.item } : allItems
 
                     // Match items (this is the expensive operation)
+                    let matchStart = Date()
                     let results = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
+                    let matchTime = Date().timeIntervalSince(matchStart) * 1000
+
+                    let totalTime = Date().timeIntervalSince(overallStart) * 1000
+
+                    // Diagnostic output
+                    if readTime > 1 || matchTime > 10 {
+                        print("[\(update.query)] read: \(String(format: "%.1f", readTime))ms, match: \(String(format: "%.1f", matchTime))ms (\(searchItems.count) items → \(results.count) results), total: \(String(format: "%.1f", totalTime))ms")
+                    }
 
                     // Update actor state with results (quick actor call)
                     await self.applyMatchResults(results, query: update.query)
