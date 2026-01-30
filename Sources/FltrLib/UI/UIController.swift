@@ -2,6 +2,14 @@ import Foundation
 import TUI
 import AsyncAlgorithms
 
+/// Query update message for matching
+struct QueryUpdate: Sendable {
+    let query: String
+    let previousQuery: String
+    let allItems: [Item]
+    let currentMatches: [MatchedItem]
+}
+
 /// Main UI controller - event loop and rendering
 actor UIController {
     private let terminal: RawTerminal
@@ -35,11 +43,17 @@ actor UIController {
 
     // Debounce support with AsyncSequence
     private let debounceDelay: Duration  // Delay before executing match after typing
-    private let queryUpdateStream: AsyncStream<[Item]>
-    private let queryUpdateContinuation: AsyncStream<[Item]>.Continuation
+    private let queryUpdateStream: AsyncStream<QueryUpdate>
+    private let queryUpdateContinuation: AsyncStream<QueryUpdate>.Continuation
 
     // Current matching task - can be cancelled when new input arrives
     private var currentMatchTask: Task<Void, Never>?
+
+    // Preview update task - can be cancelled when selection changes
+    private var currentPreviewTask: Task<Void, Never>?
+
+    // Background task for fetching new items
+    private var fetchItemsTask: Task<[Item], Never>?
 
     init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(100)) {
         self.terminal = terminal
@@ -71,8 +85,8 @@ actor UIController {
         )
 
         // Create AsyncStream for query changes
-        var continuation: AsyncStream<[Item]>.Continuation!
-        let stream = AsyncStream<[Item]> { continuation = $0 }
+        var continuation: AsyncStream<QueryUpdate>.Continuation!
+        let stream = AsyncStream<QueryUpdate> { continuation = $0 }
         self.queryUpdateStream = stream
         self.queryUpdateContinuation = continuation
     }
@@ -97,20 +111,38 @@ actor UIController {
         let refreshInterval: TimeInterval = 0.1  // Refresh every 100ms when new items arrive
 
         // Start debounced query update task
-        let debounceTask = Task {
-            for await allItems in queryUpdateStream.debounce(for: debounceDelay) {
+        // This task runs matching OUTSIDE the actor to avoid blocking input
+        let debounceTask = Task { [engine, previewCommand, previewManager] in
+            for await update in queryUpdateStream.debounce(for: debounceDelay) {
                 // Cancel any previous matching task
                 currentMatchTask?.cancel()
 
-                // Start new matching task in background
-                currentMatchTask = Task {
-                    await updateMatchesIncremental(allItems: allItems)
-                    await updatePreview()
-                    await render()
+                // Run matching completely outside the actor (nonisolated)
+                currentMatchTask = Task.detached {
+                    // Determine search items based on incremental filtering
+                    let canUseIncremental = !update.previousQuery.isEmpty &&
+                                           update.query.hasPrefix(update.previousQuery) &&
+                                           update.query.count > update.previousQuery.count
+
+                    let searchItems = canUseIncremental ? update.currentMatches.map { $0.item } : update.allItems
+
+                    // Match items (this is the expensive operation)
+                    let results = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
+
+                    // Update actor state with results (quick actor call)
+                    await self.applyMatchResults(results, query: update.query)
+
+                    // Update preview if needed (in background)
+                    if previewCommand != nil, let manager = previewManager, !results.isEmpty {
+                        await self.updatePreviewAsync(manager: manager, command: previewCommand!)
+                    }
+
+                    // Render the updated UI
+                    await self.render()
                 }
 
-                // Wait for it to complete (but it can be cancelled by next input)
-                await currentMatchTask?.value
+                // Don't wait for completion - let it run in background
+                // It will be cancelled if new input arrives
             }
         }
 
@@ -130,20 +162,53 @@ actor UIController {
                     // New items arrived! Update if enough time passed
                     let now = Date()
                     if now.timeIntervalSince(lastRefresh) >= refreshInterval {
-                        allItems = await cache.getAllItems()
+                        // Update count without blocking on getAllItems()
                         lastItemCount = currentCount
                         state.totalItems = currentCount
 
-                        // Cancel any previous matching task
+                        // Cancel any previous tasks
+                        fetchItemsTask?.cancel()
                         currentMatchTask?.cancel()
 
-                        // Re-run current query with new items (bypasses debounce)
-                        // Run in background task so it doesn't block input
-                        // Capture a local copy to avoid mutation warning
-                        let itemsSnapshot = allItems
-                        currentMatchTask = Task {
-                            await updateMatchesIncremental(allItems: itemsSnapshot)
-                            await render()
+                        // Fetch items and re-match in background (doesn't block input!)
+                        fetchItemsTask = Task.detached { [cache, engine, previewCommand, previewManager] in
+                            // Get all items outside the actor (this is the slow copy operation)
+                            let newItems = await cache.getAllItems()
+
+                            // Determine search items
+                            let query = await self.state.query
+                            let previousQuery = await self.state.previousQuery
+                            let currentMatches = await self.state.matchedItems
+
+                            let canUseIncremental = !previousQuery.isEmpty &&
+                                                   query.hasPrefix(previousQuery) &&
+                                                   query.count > previousQuery.count
+
+                            let searchItems = canUseIncremental ? currentMatches.map { $0.item } : newItems
+
+                            // Match items
+                            let results = await engine.matchItemsParallel(pattern: query, items: searchItems)
+
+                            // Update state
+                            await self.applyMatchResults(results, query: query)
+
+                            // Update preview if needed
+                            if previewCommand != nil, let manager = previewManager, !results.isEmpty {
+                                await self.updatePreviewAsync(manager: manager, command: previewCommand!)
+                            }
+
+                            // Render
+                            await self.render()
+
+                            // Return new items to update allItems
+                            return newItems
+                        }
+
+                        // Update allItems when task completes (if not cancelled)
+                        Task {
+                            if let newItems = await fetchItemsTask?.value {
+                                allItems = newItems
+                            }
                         }
 
                         lastRefresh = now
@@ -160,6 +225,8 @@ actor UIController {
         // Clean up tasks
         queryUpdateContinuation.finish()
         currentMatchTask?.cancel()
+        currentPreviewTask?.cancel()
+        fetchItemsTask?.cancel()
         debounceTask.cancel()
 
         // Exit raw mode synchronously before returning to ensure terminal is restored
@@ -198,7 +265,16 @@ actor UIController {
             scheduleMatchUpdate(allItems: allItems)
 
         case .updatePreview:
-            await updatePreview()
+            // Cancel previous preview task
+            currentPreviewTask?.cancel()
+
+            // Update preview in background (don't block input)
+            if let manager = previewManager, let command = previewCommand {
+                currentPreviewTask = Task.detached {
+                    await self.updatePreviewAsync(manager: manager, command: command)
+                    await self.render()
+                }
+            }
 
         case .updatePreviewScroll(let offset):
             previewScrollOffset = offset
@@ -207,12 +283,24 @@ actor UIController {
             if useFloatingPreview {
                 showFloatingPreview.toggle()
                 if showFloatingPreview {
-                    await updatePreview()
+                    currentPreviewTask?.cancel()
+                    if let manager = previewManager, let command = previewCommand {
+                        currentPreviewTask = Task.detached {
+                            await self.updatePreviewAsync(manager: manager, command: command)
+                            await self.render()
+                        }
+                    }
                 }
             } else {
                 showSplitPreview.toggle()
                 if showSplitPreview {
-                    await updatePreview()
+                    currentPreviewTask?.cancel()
+                    if let manager = previewManager, let command = previewCommand {
+                        currentPreviewTask = Task.detached {
+                            await self.updatePreviewAsync(manager: manager, command: command)
+                            await self.render()
+                        }
+                    }
                 }
             }
         }
@@ -220,7 +308,41 @@ actor UIController {
 
     /// Emit query change event to debounced stream
     private func scheduleMatchUpdate(allItems: [Item]) {
-        queryUpdateContinuation.yield(allItems)
+        let update = QueryUpdate(
+            query: state.query,
+            previousQuery: state.previousQuery,
+            allItems: allItems,
+            currentMatches: state.matchedItems
+        )
+        queryUpdateContinuation.yield(update)
+    }
+
+    /// Apply match results to state (actor-isolated, fast)
+    private func applyMatchResults(_ results: [MatchedItem], query: String) {
+        state.updateMatches(results)
+        state.previousQuery = query
+    }
+
+    /// Update preview asynchronously in background
+    private func updatePreviewAsync(manager: PreviewManager, command: String) async {
+        guard !state.matchedItems.isEmpty else {
+            cachedPreview = ""
+            previewScrollOffset = 0
+            return
+        }
+
+        let selectedItem = state.matchedItems[state.selectedIndex]
+        let newPreview = await manager.executeCommand(command, item: selectedItem.item.text)
+
+        // Update cached preview (actor-isolated)
+        self.setCachedPreview(newPreview)
+    }
+
+    private func setCachedPreview(_ preview: String) {
+        if preview != cachedPreview {
+            previewScrollOffset = 0
+        }
+        cachedPreview = preview
     }
 
     /// Incremental filtering: search within previous results if query is extended
