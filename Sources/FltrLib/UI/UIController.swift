@@ -122,8 +122,14 @@ actor UIController {
                 // Cancel any previous matching task
                 currentMatchTask?.cancel()
 
+                // Read previousQuery BEFORE starting detached task
+                // This ensures we have the latest value from previous query
+                let previousQuerySnapshot = await self.state.previousQuery
+
+                // Update previousQuery NOW, before Task.detached, so next query sees it
+                await self.updatePreviousQuery(update.query)
+
                 // Run matching completely outside the actor (nonisolated)
-                // Don't copy arrays - read from actor inside Task.detached when needed
                 currentMatchTask = Task.detached {
                     let overallStart = Date()
 
@@ -131,8 +137,10 @@ actor UIController {
                     let readStart = Date()
                     let allItems = await self.allItems
                     let currentMatches = await self.state.matchedItems
-                    let previousQuery = await self.state.previousQuery  // Read FRESH!
                     let readTime = Date().timeIntervalSince(readStart) * 1000
+
+                    // Use previousQuery snapshot from before Task.detached
+                    let previousQuery = previousQuerySnapshot
 
                     // Determine search items based on incremental filtering
                     let canUseIncremental = !previousQuery.isEmpty &&
@@ -140,9 +148,6 @@ actor UIController {
                                            update.query.count > previousQuery.count
 
                     let searchItems = canUseIncremental ? currentMatches.map { $0.item } : allItems
-
-                    // Update previousQuery for next iteration (after we've used it for incremental check!)
-                    await self.updatePreviousQuery(update.query)
 
                     // Debug: log why incremental was/wasn't used
                     if !canUseIncremental && !previousQuery.isEmpty {
