@@ -21,13 +21,12 @@ struct MatchingEngine: Sendable {
             return items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: [])) }
         }
 
-        // fzf optimization: Use exact substring match for very short patterns (much faster!)
-        // Fuzzy matching 827k items with "a" takes 4s, substring search takes ~200ms
+        // NOTE: fzf always uses fuzzy matching - no substring fast path
+        // But Swift is slower than Go, so we can optionally use substring for 1-char patterns
+        // Set to 0 to match fzf exactly (always fuzzy), or 1-2 for faster short patterns
         let trimmedPattern = pattern.trimmingCharacters(in: .whitespaces)
-
-        // Adjust threshold: 1 = only single chars, 2 = up to "aa", 0 = always fuzzy
-        let substringThreshold = 1  // Change this to adjust behavior
-        let useExactMatch = trimmedPattern.count <= substringThreshold && !trimmedPattern.contains(" ")
+        let substringThreshold = 0  // 0 = pure fzf behavior (always fuzzy)
+        let useExactMatch = substringThreshold > 0 && trimmedPattern.count <= substringThreshold && !trimmedPattern.contains(" ")
 
         if useExactMatch {
             return await exactSubstringMatch(pattern: trimmedPattern, items: items)
