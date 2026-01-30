@@ -3,10 +3,10 @@ import TUI
 import AsyncAlgorithms
 
 /// Query update message for matching
-/// Lightweight - only contains queries, not item arrays
+/// Lightweight - only contains current query
+/// Don't capture previousQuery here - read fresh from actor to avoid staleness
 struct QueryUpdate: Sendable {
     let query: String
-    let previousQuery: String
 }
 
 /// Main UI controller - event loop and rendering
@@ -122,10 +122,6 @@ actor UIController {
                 // Cancel any previous matching task
                 currentMatchTask?.cancel()
 
-                // Update previousQuery IMMEDIATELY to prevent race condition
-                // If we wait until after matching, the next query might start with stale previousQuery
-                await self.updatePreviousQuery(update.query)
-
                 // Run matching completely outside the actor (nonisolated)
                 // Don't copy arrays - read from actor inside Task.detached when needed
                 currentMatchTask = Task.detached {
@@ -135,18 +131,22 @@ actor UIController {
                     let readStart = Date()
                     let allItems = await self.allItems
                     let currentMatches = await self.state.matchedItems
+                    let previousQuery = await self.state.previousQuery  // Read FRESH!
                     let readTime = Date().timeIntervalSince(readStart) * 1000
 
                     // Determine search items based on incremental filtering
-                    let canUseIncremental = !update.previousQuery.isEmpty &&
-                                           update.query.hasPrefix(update.previousQuery) &&
-                                           update.query.count > update.previousQuery.count
+                    let canUseIncremental = !previousQuery.isEmpty &&
+                                           update.query.hasPrefix(previousQuery) &&
+                                           update.query.count > previousQuery.count
 
                     let searchItems = canUseIncremental ? currentMatches.map { $0.item } : allItems
 
+                    // Update previousQuery for next iteration (after we've used it for incremental check!)
+                    await self.updatePreviousQuery(update.query)
+
                     // Debug: log why incremental was/wasn't used
-                    if !canUseIncremental && !update.previousQuery.isEmpty {
-                        let logMsg = "  [DEBUG] Incremental skipped: prev='\(update.previousQuery)' query='\(update.query)' hasPrefix=\(update.query.hasPrefix(update.previousQuery)) longerQuery=\(update.query.count > update.previousQuery.count)\n"
+                    if !canUseIncremental && !previousQuery.isEmpty {
+                        let logMsg = "  [DEBUG] Incremental skipped: prev='\(previousQuery)' query='\(update.query)' hasPrefix=\(update.query.hasPrefix(previousQuery)) longerQuery=\(update.query.count > previousQuery.count)\n"
                         if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/fltr-perf.log")) {
                             handle.seekToEndOfFile()
                             handle.write(logMsg.data(using: .utf8)!)
@@ -354,12 +354,9 @@ actor UIController {
     }
 
     /// Emit query change event to debounced stream
-    /// Only sends query strings - avoids copying large arrays
+    /// Only sends current query - previousQuery read fresh to avoid staleness
     private func scheduleMatchUpdate() {
-        let update = QueryUpdate(
-            query: state.query,
-            previousQuery: state.previousQuery
-        )
+        let update = QueryUpdate(query: state.query)
         queryUpdateContinuation.yield(update)
     }
 
