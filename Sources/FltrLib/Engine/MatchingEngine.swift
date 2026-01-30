@@ -1,7 +1,8 @@
 import Foundation
 
 /// Parallel matching engine using Swift structured concurrency
-actor MatchingEngine {
+/// Note: Not an actor - matching is a pure computation that should not block input handling
+struct MatchingEngine: Sendable {
     private let matcher: FuzzyMatcher
     private let parallelThreshold: Int  // Minimum items to use parallel matching
 
@@ -11,6 +12,7 @@ actor MatchingEngine {
     }
 
     /// Match items in parallel using TaskGroup
+    /// This is a cancellable async operation that yields cooperatively
     func matchItemsParallel(pattern: String, items: [Item]) async -> [MatchedItem] {
         // Empty pattern - return all items quickly
         guard !pattern.isEmpty else {
@@ -32,10 +34,18 @@ actor MatchingEngine {
             // Partition items and dispatch to task group
             for partition in items.chunked(into: partitionSize) {
                 group.addTask {
+                    // Check for cancellation before processing partition
+                    guard !Task.isCancelled else { return [] }
+
                     // Each task gets its own matrix buffer for reuse
                     return FuzzyMatchV2.$matrixBuffer.withValue(FuzzyMatchV2.MatrixBuffer()) {
                         var matched: [MatchedItem] = []
                         for item in partition {
+                            // Yield cooperatively every 100 items to allow cancellation
+                            if matched.count % 100 == 0 {
+                                guard !Task.isCancelled else { return [] }
+                            }
+
                             if let result = self.matcher.match(pattern: pattern, text: item.text) {
                                 matched.append(MatchedItem(item: item, matchResult: result))
                             }
@@ -48,6 +58,8 @@ actor MatchingEngine {
             // Collect results from all tasks
             var allMatches: [MatchedItem] = []
             for await partitionResults in group {
+                // Check cancellation while collecting results
+                guard !Task.isCancelled else { break }
                 allMatches.append(contentsOf: partitionResults)
             }
 

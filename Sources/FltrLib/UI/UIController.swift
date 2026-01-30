@@ -38,6 +38,9 @@ actor UIController {
     private let queryUpdateStream: AsyncStream<[Item]>
     private let queryUpdateContinuation: AsyncStream<[Item]>.Continuation
 
+    // Current matching task - can be cancelled when new input arrives
+    private var currentMatchTask: Task<Void, Never>?
+
     init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(100)) {
         self.terminal = terminal
         self.matcher = matcher
@@ -96,9 +99,18 @@ actor UIController {
         // Start debounced query update task
         let debounceTask = Task {
             for await allItems in queryUpdateStream.debounce(for: debounceDelay) {
-                await updateMatchesIncremental(allItems: allItems)
-                await updatePreview()
-                await render()
+                // Cancel any previous matching task
+                currentMatchTask?.cancel()
+
+                // Start new matching task in background
+                currentMatchTask = Task {
+                    await updateMatchesIncremental(allItems: allItems)
+                    await updatePreview()
+                    await render()
+                }
+
+                // Wait for it to complete (but it can be cancelled by next input)
+                await currentMatchTask?.value
             }
         }
 
@@ -122,9 +134,17 @@ actor UIController {
                         lastItemCount = currentCount
                         state.totalItems = currentCount
 
+                        // Cancel any previous matching task
+                        currentMatchTask?.cancel()
+
                         // Re-run current query with new items (bypasses debounce)
-                        await updateMatchesIncremental(allItems: allItems)
-                        await render()
+                        // Run in background task so it doesn't block input
+                        // Capture a local copy to avoid mutation warning
+                        let itemsSnapshot = allItems
+                        currentMatchTask = Task {
+                            await updateMatchesIncremental(allItems: itemsSnapshot)
+                            await render()
+                        }
 
                         lastRefresh = now
                     }
@@ -137,8 +157,9 @@ actor UIController {
             }
         }
 
-        // Clean up debounce task
+        // Clean up tasks
         queryUpdateContinuation.finish()
+        currentMatchTask?.cancel()
         debounceTask.cancel()
 
         // Exit raw mode synchronously before returning to ensure terminal is restored
