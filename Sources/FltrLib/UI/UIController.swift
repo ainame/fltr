@@ -130,7 +130,9 @@ actor UIController {
                     }
                 }
 
-                // Sleep briefly to avoid busy-waiting
+                // Brief sleep to reduce CPU usage when no input available
+                // Terminal readByte already has 100ms timeout, so combined we check
+                // for updates approximately every 110ms when idle
                 try? await Task.sleep(for: .milliseconds(10))
             }
         }
