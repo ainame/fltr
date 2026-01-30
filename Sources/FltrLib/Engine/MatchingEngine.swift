@@ -5,10 +5,12 @@ import Foundation
 struct MatchingEngine: Sendable {
     private let matcher: FuzzyMatcher
     private let parallelThreshold: Int  // Minimum items to use parallel matching
+    private let maxResults: Int  // Maximum results to keep (limits sorting overhead)
 
-    init(matcher: FuzzyMatcher, parallelThreshold: Int = 1000) {
+    init(matcher: FuzzyMatcher, parallelThreshold: Int = 1000, maxResults: Int = 10000) {
         self.matcher = matcher
         self.parallelThreshold = parallelThreshold
+        self.maxResults = maxResults
     }
 
     /// Match items in parallel using TaskGroup
@@ -63,10 +65,65 @@ struct MatchingEngine: Sendable {
                 allMatches.append(contentsOf: partitionResults)
             }
 
-            // Sort by score (descending)
-            allMatches.sort { $0.matchResult.score > $1.matchResult.score }
-            return allMatches
+            // Limit and sort results for performance
+            // With 800k items, "a" might match 200k - sorting that is O(n log n) = expensive!
+            // Only keep top N results since UI can only display ~50 anyway
+            if allMatches.count > maxResults {
+                // Use partial sort for better performance: O(n + k log k) instead of O(n log n)
+                // where k = maxResults and n = total matches
+                return topN(from: allMatches, count: maxResults)
+            } else {
+                // Small result set - just sort normally
+                allMatches.sort { $0.matchResult.score > $1.matchResult.score }
+                return allMatches
+            }
         }
+    }
+
+    /// Select top N items by score without fully sorting
+    /// Uses partial sort: O(n + k log k) instead of O(n log n)
+    /// where n = input size, k = count
+    private func topN(from matches: [MatchedItem], count: Int) -> [MatchedItem] {
+        guard matches.count > count else {
+            return matches.sorted { $0.matchResult.score > $1.matchResult.score }
+        }
+
+        // Use nth_element approach: partition around kth element
+        var working = matches
+
+        // Find the kth largest score using quickselect-style partitioning
+        // This moves top k elements to the front (unsorted)
+        let k = count
+        var left = 0
+        var right = working.count - 1
+
+        while left < right {
+            let pivotScore = working[right].matchResult.score
+            var i = left
+
+            // Partition: move items >= pivot to the left
+            for j in left..<right {
+                if working[j].matchResult.score >= pivotScore {
+                    working.swapAt(i, j)
+                    i += 1
+                }
+            }
+            working.swapAt(i, right)
+
+            // Check if we found the kth position
+            if i == k {
+                break
+            } else if i > k {
+                right = i - 1
+            } else {
+                left = i + 1
+            }
+        }
+
+        // Take top k and sort them
+        var topK = Array(working.prefix(k))
+        topK.sort { $0.matchResult.score > $1.matchResult.score }
+        return topK
     }
 }
 

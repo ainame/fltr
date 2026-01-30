@@ -60,7 +60,7 @@ actor UIController {
     // Cached reference to all items (updated when new items arrive)
     private var allItems: [Item] = []
 
-    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(100)) {
+    init(terminal: RawTerminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(50)) {
         self.terminal = terminal
         self.matcher = matcher
         self.engine = MatchingEngine(matcher: matcher)
