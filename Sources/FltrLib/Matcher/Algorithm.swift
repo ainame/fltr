@@ -2,7 +2,7 @@ import Foundation
 
 /// FuzzyMatchV2 algorithm implementation
 /// Based on fzf's algorithm - modified Smith-Waterman with scoring bonuses
-struct FuzzyMatchV2: Sendable {
+public struct FuzzyMatchV2: Sendable {
     // Scoring constants (from fzf)
     static let scoreMatch = 16
     static let scoreGapStart = -3
@@ -51,7 +51,7 @@ struct FuzzyMatchV2: Sendable {
     @TaskLocal static var matrixBuffer: MatrixBuffer?
 
     /// Main matching function
-    static func match(pattern: String, text: String, caseSensitive: Bool = false) -> MatchResult? {
+    public static func match(pattern: String, text: String, caseSensitive: Bool = false) -> MatchResult? {
         guard !pattern.isEmpty else {
             return MatchResult(score: 0, positions: [])
         }

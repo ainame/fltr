@@ -54,6 +54,13 @@ let package = Package(
             dependencies: []
         ),
 
+        // Benchmarks
+        .executableTarget(
+            name: "matcher-benchmark",
+            dependencies: ["FltrLib"],
+            path: "Sources/Benchmarks"
+        ),
+
         // Tests
         .testTarget(
             name: "fltrTests",

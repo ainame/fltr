@@ -2,7 +2,7 @@ import Foundation
 
 /// Character classification for bonus scoring
 /// Based on fzf's character classification system
-enum CharClass: Sendable {
+public enum CharClass: Sendable {
     case whitespace
     case delimiter
     case lower
@@ -11,7 +11,8 @@ enum CharClass: Sendable {
     case number
 
     // Static delimiter set to avoid repeated allocations
-    private static let delimiters: Set<Character> = ["_", "-", "/", "\\", ".", ":", " ", "\t"]
+    @usableFromInline
+    internal static let delimiters: Set<Character> = ["_", "-", "/", "\\", ".", ":", " ", "\t"]
 
     @inlinable
     static func classify(_ char: Character) -> CharClass {
