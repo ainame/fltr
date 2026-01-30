@@ -19,23 +19,22 @@ actor StdinReader {
 
         isReading = true
 
-        return Task.detached { [weak cache] in
-            // Read in background thread to avoid blocking
+        // Use regular Task to maintain structured concurrency and actor isolation
+        return Task {
+            // Read in background - readLine() is synchronous but blocks until data available
             while let line = readLine() {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
 
-                if let cache = cache {
-                    await cache.append(trimmed)
-                }
+                await cache.append(trimmed)
             }
 
             // Mark as complete when stdin is exhausted
-            await self.markComplete()
+            await markComplete()
         }
     }
 
-    private func markComplete() {
+    private func markComplete() async {
         isComplete = true
     }
 
