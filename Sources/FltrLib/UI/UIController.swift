@@ -122,6 +122,10 @@ actor UIController {
                 // Cancel any previous matching task
                 currentMatchTask?.cancel()
 
+                // Update previousQuery IMMEDIATELY to prevent race condition
+                // If we wait until after matching, the next query might start with stale previousQuery
+                await self.updatePreviousQuery(update.query)
+
                 // Run matching completely outside the actor (nonisolated)
                 // Don't copy arrays - read from actor inside Task.detached when needed
                 currentMatchTask = Task.detached {
@@ -170,7 +174,7 @@ actor UIController {
                     }
 
                     // Update actor state with results (quick actor call)
-                    await self.applyMatchResults(results, query: update.query)
+                    await self.applyMatchResults(results)
 
                     // Update preview if needed (in background)
                     if previewCommand != nil, let manager = previewManager, !results.isEmpty {
@@ -226,11 +230,14 @@ actor UIController {
 
                             let searchItems = canUseIncremental ? currentMatches.map { $0.item } : newItems
 
+                            // Update previousQuery before matching to prevent race condition
+                            await self.updatePreviousQuery(query)
+
                             // Match items
                             let results = await engine.matchItemsParallel(pattern: query, items: searchItems)
 
                             // Update state
-                            await self.applyMatchResults(results, query: query)
+                            await self.applyMatchResults(results)
 
                             // Update preview if needed
                             if previewCommand != nil, let manager = previewManager, !results.isEmpty {
@@ -356,10 +363,15 @@ actor UIController {
         queryUpdateContinuation.yield(update)
     }
 
-    /// Apply match results to state (actor-isolated, fast)
-    private func applyMatchResults(_ results: [MatchedItem], query: String) {
-        state.updateMatches(results)
+    /// Update previousQuery to prevent race conditions in incremental filtering
+    private func updatePreviousQuery(_ query: String) {
         state.previousQuery = query
+    }
+
+    /// Apply match results to state (actor-isolated, fast)
+    /// Note: previousQuery is updated before matching starts to prevent race conditions
+    private func applyMatchResults(_ results: [MatchedItem]) {
+        state.updateMatches(results)
     }
 
     /// Update preview asynchronously in background
