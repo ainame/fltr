@@ -24,7 +24,10 @@ struct MatchingEngine: Sendable {
         // fzf optimization: Use exact substring match for very short patterns (much faster!)
         // Fuzzy matching 827k items with "a" takes 4s, substring search takes ~200ms
         let trimmedPattern = pattern.trimmingCharacters(in: .whitespaces)
-        let useExactMatch = trimmedPattern.count <= 2 && !trimmedPattern.contains(" ")
+
+        // Adjust threshold: 1 = only single chars, 2 = up to "aa", 0 = always fuzzy
+        let substringThreshold = 1  // Change this to adjust behavior
+        let useExactMatch = trimmedPattern.count <= substringThreshold && !trimmedPattern.contains(" ")
 
         if useExactMatch {
             return await exactSubstringMatch(pattern: trimmedPattern, items: items)
