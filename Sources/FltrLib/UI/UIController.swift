@@ -147,9 +147,16 @@ actor UIController {
 
                     let totalTime = Date().timeIntervalSince(overallStart) * 1000
 
-                    // Diagnostic output
+                    // Diagnostic output to log file
                     if readTime > 1 || matchTime > 10 {
-                        print("[\(update.query)] read: \(String(format: "%.1f", readTime))ms, match: \(String(format: "%.1f", matchTime))ms (\(searchItems.count) items → \(results.count) results), total: \(String(format: "%.1f", totalTime))ms")
+                        let logMsg = "[\(update.query)] read: \(String(format: "%.1f", readTime))ms, match: \(String(format: "%.1f", matchTime))ms (\(searchItems.count) items → \(results.count) results), total: \(String(format: "%.1f", totalTime))ms\n"
+                        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/fltr-perf.log")) {
+                            handle.seekToEndOfFile()
+                            handle.write(logMsg.data(using: .utf8)!)
+                            try? handle.close()
+                        } else {
+                            try? logMsg.data(using: .utf8)?.write(to: URL(fileURLWithPath: "/tmp/fltr-perf.log"))
+                        }
                     }
 
                     // Update actor state with results (quick actor call)
