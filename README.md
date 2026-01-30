@@ -137,7 +137,7 @@ cat words.txt | fltr --case-sensitive
 
 ## Requirements
 
-- macOS 14+ or Linux
+- macOS 26+ or Linux
 - Terminal with ANSI color support
 
 ## Development
