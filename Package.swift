@@ -15,10 +15,27 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-subprocess", from: "0.3.0"),
     ],
     targets: [
-        // FltrCSystem - C system library shims for cross-platform POSIX APIs
+        // fltr - Fuzzy finder executable
+        .executableTarget(
+            name: "fltr",
+            dependencies: [
+                "FltrLib",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "SystemPackage", package: "swift-system"),
+            ]
+        ),
+
+        // FltrLib - Lib code for fltr
         .target(
-            name: "FltrCSystem",
-            dependencies: []
+            name: "FltrLib",
+            dependencies: [
+                "TUI",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "SystemPackage", package: "swift-system"),
+                .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
+                .product(name: "Collections", package: "swift-collections"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
+            ]
         ),
 
         // TUI - Reusable terminal UI library
@@ -31,18 +48,10 @@ let package = Package(
             ]
         ),
 
-        // fltr - Fuzzy finder executable
-        .executableTarget(
-            name: "fltr",
-            dependencies: [
-                "TUI",
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                .product(name: "SystemPackage", package: "swift-system"),
-                .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
-                .product(name: "Collections", package: "swift-collections"),
-                .product(name: "DisplayWidth", package: "swift-displaywidth"),
-                .product(name: "Subprocess", package: "swift-subprocess"),
-            ]
+        // FltrCSystem - C system library shims for cross-platform POSIX APIs
+        .target(
+            name: "FltrCSystem",
+            dependencies: []
         ),
 
         // Tests
