@@ -119,24 +119,28 @@ actor UIController {
         // This task runs matching OUTSIDE the actor to avoid blocking input
         let debounceTask = Task { [engine, previewCommand, previewManager] in
             for await update in queryUpdateStream.debounce(for: debounceDelay) {
-                // Cancel any previous matching task
-                currentMatchTask?.cancel()
+                // Wait for previous task to complete before starting new one
+                // This ensures state.matchedItems has the latest results for incremental filtering
+                if let prevTask = currentMatchTask {
+                    _ = await prevTask.value
+                }
 
-                // Read previousQuery BEFORE starting detached task
-                // This ensures we have the latest value from previous query
-                let previousQuerySnapshot = await self.state.previousQuery
+                // Now capture state - previous task has updated matchedItems
+                let previousQuerySnapshot = self.state.previousQuery
+                let currentMatchesSnapshot = self.state.matchedItems
+                let allItemsSnapshot = self.allItems
 
-                // Update previousQuery NOW, before Task.detached, so next query sees it
-                await self.updatePreviousQuery(update.query)
+                // Update previousQuery for next iteration
+                self.updatePreviousQuery(update.query)
 
                 // Run matching completely outside the actor (nonisolated)
                 currentMatchTask = Task.detached {
                     let overallStart = Date()
 
-                    // Read state from actor (this creates a copy, but only once per debounce)
+                    // Use captured snapshots (avoid async reads that can race)
                     let readStart = Date()
-                    let allItems = await self.allItems
-                    let currentMatches = await self.state.matchedItems
+                    let allItems = allItemsSnapshot
+                    let currentMatches = currentMatchesSnapshot
                     let readTime = Date().timeIntervalSince(readStart) * 1000
 
                     // Use previousQuery snapshot from before Task.detached
@@ -148,16 +152,6 @@ actor UIController {
                                            update.query.count > previousQuery.count
 
                     let searchItems = canUseIncremental ? currentMatches.map { $0.item } : allItems
-
-                    // Debug: log why incremental was/wasn't used
-                    if !canUseIncremental && !previousQuery.isEmpty {
-                        let logMsg = "  [DEBUG] Incremental skipped: prev='\(previousQuery)' query='\(update.query)' hasPrefix=\(update.query.hasPrefix(previousQuery)) longerQuery=\(update.query.count > previousQuery.count)\n"
-                        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/fltr-perf.log")) {
-                            handle.seekToEndOfFile()
-                            handle.write(logMsg.data(using: .utf8)!)
-                            try? handle.close()
-                        }
-                    }
 
                     // Match items (this is the expensive operation)
                     let matchStart = Date()
