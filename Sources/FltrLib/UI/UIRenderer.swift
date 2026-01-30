@@ -48,6 +48,9 @@ struct UIRenderer: Sendable {
             cols: listWidth
         )
 
+        // Calculate actual number of items rendered
+        let actualItemsRendered = min(max(0, state.matchedItems.count - state.scrollOffset), displayHeight)
+
         // Render status bar (positions itself)
         buffer += renderStatusBar(
             matchedCount: state.matchedItems.count,
@@ -56,7 +59,7 @@ struct UIRenderer: Sendable {
             isReadingStdin: context.isReadingStdin,
             scrollOffset: state.scrollOffset,
             displayHeight: displayHeight,
-            row: displayHeight + 3,
+            row: actualItemsRendered + 3,
             cols: listWidth
         )
 
