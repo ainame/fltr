@@ -20,3 +20,5 @@ xcuserdata/
 
 # Development
 .env
+.claude
+.agents
