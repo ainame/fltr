@@ -124,6 +124,49 @@ Key optimizations implemented:
 - Incremental filtering (searches previous results when query extends)
 - `@inlinable` on hot path functions
 
+### Benchmarking matching changes
+
+When changing matcher/engine code, run the release benchmark with at least 500k items and compare medians:
+
+```bash
+swift build -c release --target matcher-benchmark
+.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2
+```
+
+Recommended workflow for agents (before/after comparison):
+
+1) Run baseline and save output:
+```bash
+.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.before.txt
+```
+
+2) Apply changes, rebuild, rerun with the same arguments:
+```bash
+swift build -c release --target matcher-benchmark
+.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.after.txt
+```
+
+3) Compare the median/avg lines (engine + matcher) and report deltas:
+```bash
+diff -u /tmp/fltr-bench.before.txt /tmp/fltr-bench.after.txt
+```
+
+Notes:
+- Keep the same `--count`, `--seed`, `--mode`, and machine when comparing.
+- Prefer `--mode engine` if only the parallel matcher changed.
+
+### Makefile helpers
+
+Convenience targets for profiling and benchmarks:
+
+```bash
+# Record a Time Profiler trace (open later in Instruments)
+make profile INPUT=./input.txt ARGS="--query foo"
+
+# Run matcher benchmark with defaults (override as needed)
+make benchmark
+```
+
 ## Platform Support
 
 - macOS 14+ (Sonoma)
