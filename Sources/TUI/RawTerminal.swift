@@ -13,7 +13,7 @@ import Synchronization
 /// - Non-blocking byte reading
 ///
 /// This actor is designed for safe concurrent access to terminal I/O operations.
-public actor RawTerminal {
+public actor RawTerminal: Terminal {
     private var originalTermios: termios?
     private var ttyFd: FileDescriptor?
     private var isRawMode = false

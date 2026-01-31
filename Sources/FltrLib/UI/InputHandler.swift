@@ -8,7 +8,7 @@ struct InputHandler: Sendable {
     let useFloatingPreview: Bool
 
     /// Parse escape sequence from terminal
-    func parseEscapeSequence(firstByte: UInt8, terminal: RawTerminal) async -> Key {
+    func parseEscapeSequence(firstByte: UInt8, terminal: any Terminal) async -> Key {
         guard firstByte == 27 else {
             // Not an escape sequence, use standard parsing
             return KeyboardInput.parseKey(firstByte: firstByte, readNext: { nil })

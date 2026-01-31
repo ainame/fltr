@@ -30,11 +30,11 @@ actor StdinReader {
             }
 
             // Mark as complete when stdin is exhausted
-            await markComplete()
+            await self.finishReading()
         }
     }
 
-    private func markComplete() async {
+    func finishReading() async {
         isComplete = true
     }
 
