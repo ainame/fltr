@@ -435,6 +435,48 @@ func incrementalFilteringBackspace() {
     #expect(results3.count == 5, "All test files should match")
 }
 
+@Test("Incremental filtering sequence - hello-world query")
+func incrementalFilteringHelloWorld() {
+    let matcher = FuzzyMatcher()
+    let items = [
+        Item(index: 0, text: "hello-world"),
+        Item(index: 1, text: "hello"),
+        Item(index: 2, text: "helium"),
+        Item(index: 3, text: "help"),
+        Item(index: 4, text: "hero"),
+        Item(index: 5, text: "halo"),
+        Item(index: 6, text: "world-hello"),
+    ]
+
+    let q1 = matcher.matchItems(pattern: "h", items: items)
+    let q2 = matcher.matchItems(pattern: "he", items: items)
+    let q3 = matcher.matchItems(pattern: "hel", items: items)
+    let q4 = matcher.matchItems(pattern: "hell", items: items)
+    let q5 = matcher.matchItems(pattern: "hello", items: items)
+    let q6 = matcher.matchItems(pattern: "hello-", items: items)
+    let q7 = matcher.matchItems(pattern: "hello-w", items: items)
+    let q8 = matcher.matchItems(pattern: "hello-world", items: items)
+
+    let s1 = Set(q1.map { $0.item.text })
+    let s2 = Set(q2.map { $0.item.text })
+    let s3 = Set(q3.map { $0.item.text })
+    let s4 = Set(q4.map { $0.item.text })
+    let s5 = Set(q5.map { $0.item.text })
+    let s6 = Set(q6.map { $0.item.text })
+    let s7 = Set(q7.map { $0.item.text })
+    let s8 = Set(q8.map { $0.item.text })
+
+    #expect(s2.isSubset(of: s1))
+    #expect(s3.isSubset(of: s2))
+    #expect(s4.isSubset(of: s3))
+    #expect(s5.isSubset(of: s4))
+    #expect(s6.isSubset(of: s5))
+    #expect(s7.isSubset(of: s6))
+    #expect(s8.isSubset(of: s7))
+
+    #expect(q8.first?.item.text == "hello-world")
+}
+
 // MARK: - Edge Cases and Special Characters
 
 @Test("Special characters in paths")
