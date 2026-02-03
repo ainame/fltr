@@ -60,6 +60,15 @@ actor UIController {
     // Cached reference to all items (updated when new items arrive)
     private var allItems: [Item] = []
 
+    // Merger-level result cache (mirrors fzf's mergerCache).
+    // Keyed on (pattern, itemCount).  Invalidated whenever allItems changes.
+    // Only stores results when count <= mergerCacheMax to avoid holding huge
+    // arrays in memory for low-selectivity queries.
+    private var mergerCachePattern: String = ""
+    private var mergerCacheResults: [MatchedItem] = []
+    private var mergerCacheItemCount: Int = 0
+    private static let mergerCacheMax = 100_000
+
     init(terminal: any Terminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(50)) {
         self.terminal = terminal
         self.matcher = matcher
@@ -153,23 +162,38 @@ actor UIController {
 
                     let searchItems = canUseIncremental ? currentMatches.map { $0.item } : allItems
 
-                    // Match items (this is the expensive operation)
-                    let matchStart = Date()
-                    let results = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
-                    let matchTime = Date().timeIntervalSince(matchStart) * 1000
+                    // Merger cache: on the full-search path, check whether we
+                    // already have results for this exact (pattern, itemCount).
+                    // Skip the cache on the incremental path — the candidate set
+                    // is a subset and would produce a different result set.
+                    let results: [MatchedItem]
+                    if !canUseIncremental, let cached = await self.lookupMergerCache(pattern: update.query, itemCount: allItems.count) {
+                        results = cached
+                    } else {
+                        // Match items (this is the expensive operation)
+                        let matchStart = Date()
+                        let matchedResults = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
+                        let matchTime = Date().timeIntervalSince(matchStart) * 1000
 
-                    let totalTime = Date().timeIntervalSince(overallStart) * 1000
+                        let totalTime = Date().timeIntervalSince(overallStart) * 1000
 
-                    // Diagnostic output to log file
-                    if readTime > 1 || matchTime > 10 {
-                        let logMsg = "[\(update.query)] read: \(String(format: "%.1f", readTime))ms, match: \(String(format: "%.1f", matchTime))ms (\(searchItems.count) items → \(results.count) results), total: \(String(format: "%.1f", totalTime))ms\n"
-                        if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/fltr-perf.log")) {
-                            handle.seekToEndOfFile()
-                            handle.write(logMsg.data(using: .utf8)!)
-                            try? handle.close()
-                        } else {
-                            try? logMsg.data(using: .utf8)?.write(to: URL(fileURLWithPath: "/tmp/fltr-perf.log"))
+                        // Diagnostic output to log file
+                        if readTime > 1 || matchTime > 10 {
+                            let logMsg = "[\(update.query)] read: \(String(format: "%.1f", readTime))ms, match: \(String(format: "%.1f", matchTime))ms (\(searchItems.count) items → \(matchedResults.count) results), total: \(String(format: "%.1f", totalTime))ms\n"
+                            if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/fltr-perf.log")) {
+                                handle.seekToEndOfFile()
+                                handle.write(logMsg.data(using: .utf8)!)
+                                try? handle.close()
+                            } else {
+                                try? logMsg.data(using: .utf8)?.write(to: URL(fileURLWithPath: "/tmp/fltr-perf.log"))
+                            }
                         }
+
+                        // Store in merger cache only on the full-search path
+                        if !canUseIncremental {
+                            await self.storeMergerCache(pattern: update.query, itemCount: allItems.count, results: matchedResults)
+                        }
+                        results = matchedResults
                     }
 
                     // Update actor state with results (quick actor call)
@@ -239,8 +263,16 @@ actor UIController {
                             // Update previousQuery before matching to prevent race condition
                             await self.updatePreviousQuery(query)
 
+                            // Item count changed → invalidate stale merger cache before matching
+                            await self.invalidateMergerCache()
+
                             // Match items
                             let results = await engine.matchItemsParallel(pattern: query, items: searchItems)
+
+                            // Cache the fresh results on the full-search path
+                            if !canUseIncremental {
+                                await self.storeMergerCache(pattern: query, itemCount: newItems.count, results: results)
+                            }
 
                             // Update state
                             await self.applyMatchResults(results)
@@ -409,6 +441,31 @@ actor UIController {
             await render()
             renderScheduled = false
         }
+    }
+
+    // MARK: - Merger cache helpers (actor-isolated, O(1))
+
+    /// Return cached results if pattern and item-count match the last stored entry.
+    private func lookupMergerCache(pattern: String, itemCount: Int) -> [MatchedItem]? {
+        guard pattern == mergerCachePattern && itemCount == mergerCacheItemCount else { return nil }
+        return mergerCacheResults
+    }
+
+    /// Store results in the merger cache.  Gated by mergerCacheMax so that
+    /// low-selectivity queries (e.g. single character on 800 k items) do not
+    /// occupy memory with little reuse benefit.
+    private func storeMergerCache(pattern: String, itemCount: Int, results: [MatchedItem]) {
+        guard results.count <= Self.mergerCacheMax else { return }
+        mergerCachePattern = pattern
+        mergerCacheResults = results
+        mergerCacheItemCount = itemCount
+    }
+
+    /// Invalidate the merger cache (called whenever allItems is refreshed).
+    private func invalidateMergerCache() {
+        mergerCachePattern = ""
+        mergerCacheResults = []
+        mergerCacheItemCount = 0
     }
 
     /// Incremental filtering: search within previous results if query is extended
