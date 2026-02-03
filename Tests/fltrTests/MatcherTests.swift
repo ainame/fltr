@@ -623,3 +623,98 @@ func realWorldQueryPatterns() {
     #expect(results3.count >= 1)
     #expect(results3[0].item.text.contains("UserController"))
 }
+
+// MARK: - Scope Reduction Regression Tests
+// These exercise the edges of the scopeIndices window logic introduced in the
+// asciiFuzzyIndex optimisation.  Scores must be identical to a naive full-matrix
+// run for the same inputs.
+
+@Test("Scope reduction — single char match at start of string")
+func scopeSingleCharAtStart() {
+    let matcher = FuzzyMatcher()
+    // 'a' appears only at index 0; scope window should be [0, 0]
+    let result = matcher.match(pattern: "a", text: "abcdefghij")
+    #expect(result != nil)
+    #expect(result!.positions == [0])
+}
+
+@Test("Scope reduction — single char match at end of string")
+func scopeSingleCharAtEnd() {
+    let matcher = FuzzyMatcher()
+    // 'z' appears only at the very end
+    let result = matcher.match(pattern: "z", text: "abcdefghijklmnopqrstuvwxyz")
+    #expect(result != nil)
+    #expect(result!.positions == [25])
+}
+
+@Test("Scope reduction — single char match in middle, multiple occurrences")
+func scopeSingleCharMultiple() {
+    let matcher = FuzzyMatcher()
+    // 'o' appears at indices 1, 4, 7 in "foo_boo_zoo"
+    // The backward scan should widen the window to cover all three;
+    // the DP picks the highest-scoring one (after delimiter at index 8).
+    let result = matcher.match(pattern: "o", text: "foo_boo_zoo")
+    #expect(result != nil)
+    // Any valid 'o' position is acceptable; just verify it matched
+    #expect(result!.positions.count == 1)
+    let pos = result!.positions[0]
+    #expect(pos == 1 || pos == 2 || pos == 4 || pos == 5 || pos == 8 || pos == 9 || pos == 10)
+}
+
+@Test("Scope reduction — multi-char pattern, match only at end")
+func scopeMultiCharAtEnd() {
+    let matcher = FuzzyMatcher()
+    // "xyz" only at the tail
+    let text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaxyz"
+    let result = matcher.match(pattern: "xyz", text: text)
+    #expect(result != nil)
+    #expect(result!.positions.count == 3)
+    // positions should be the last three bytes
+    let len = text.utf8.count
+    #expect(result!.positions == [len - 3, len - 2, len - 1])
+}
+
+@Test("Scope reduction — multi-char pattern, match only at start")
+func scopeMultiCharAtStart() {
+    let matcher = FuzzyMatcher()
+    let text = "abczzzzzzzzzzzzzzzzzzzzzzzzz"
+    let result = matcher.match(pattern: "abc", text: text)
+    #expect(result != nil)
+    #expect(result!.positions == [0, 1, 2])
+}
+
+@Test("Scope reduction — score stability: word-boundary bonus preserved")
+func scopeScoreStability() {
+    let matcher = FuzzyMatcher()
+    // "fb" in "foo_bar" should get delimiter bonus on 'b' (after '_').
+    // Verify the score is positive and higher than the no-bonus case.
+    let r1 = matcher.match(pattern: "fb", text: "foo_bar")
+    let r2 = matcher.match(pattern: "fb", text: "foobar")
+    #expect(r1 != nil)
+    #expect(r2 != nil)
+    #expect(r1!.score > r2!.score, "delimiter bonus must survive scope clamping")
+}
+
+@Test("Scope reduction — case-insensitive backward scan finds uppercase")
+func scopeCaseInsensitiveBackward() {
+    let matcher = FuzzyMatcher(caseSensitive: false)
+    // Pattern 'a' (lowercase); text has 'A' only at the end.
+    // The backward scan must match 'A' as an occurrence of 'a'.
+    let result = matcher.match(pattern: "a", text: "bcdefghijklmnopqrstuvwxyzA")
+    #expect(result != nil)
+    // Should match the 'A' at the end (index 25) — it's the only 'a'/'A'
+    #expect(result!.positions == [25])
+}
+
+@Test("Scope reduction — long path, pattern scattered")
+func scopeLongPathScattered() {
+    let matcher = FuzzyMatcher()
+    let text = "src/components/authentication/handlers/validate_token.swift"
+    // "svt" — 's' near start, 'v' in validate, 't' in token/swift
+    let result = matcher.match(pattern: "svt", text: text)
+    #expect(result != nil)
+    #expect(result!.positions.count == 3)
+    // Positions must be strictly ascending
+    #expect(result!.positions[0] < result!.positions[1])
+    #expect(result!.positions[1] < result!.positions[2])
+}

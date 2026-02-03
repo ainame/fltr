@@ -139,12 +139,31 @@ public struct Utf8FuzzyMatch: Sendable {
         return byte
     }
 
-    /// Optimized pre-filter using UTF-8 bytes
+    /// Compute the DP window bounds via a forward + backward byte scan.
+    ///
+    /// Forward pass: find the earliest positions where each pattern byte can
+    /// match in order (same logic as the old containsAllBytes).  Record where
+    /// pattern[0] first matched and where pattern[last] first matched.
+    ///
+    /// Backward pass: from the end of the text, find the *last* occurrence of
+    /// the final pattern byte.  This widens the right bound so the DP can find
+    /// the globally-best alignment, not just the leftmost one.
+    ///
+    /// Returns nil when no in-order match exists (early rejection, zero DP work).
+    /// Otherwise returns (first, last) where:
+    ///   first — inclusive left bound for the DP j-loop (stepped back by 1 from
+    ///           the first pattern-byte match so the bonus calculation can see
+    ///           the preceding character, mirroring fzf's asciiFuzzyIndex).
+    ///   last  — inclusive right bound (the column index of the rightmost
+    ///           occurrence of the last pattern byte).
     @inlinable
-    static func containsAllBytes(pattern: Span<UInt8>, text: Span<UInt8>, caseSensitive: Bool) -> Bool {
-        guard pattern.count <= text.count else { return false }
+    static func scopeIndices(pattern: Span<UInt8>, text: Span<UInt8>, caseSensitive: Bool) -> (first: Int, last: Int)? {
+        guard pattern.count <= text.count else { return nil }
 
         var textIndex = 0
+        var firstMatchIdx = 0   // byte index in text where pattern[0] matched
+        var lastMatchIdx  = 0   // byte index in text where pattern[last] matched
+
         for i in 0..<pattern.count {
             let patternByte = caseSensitive ? pattern[i] : toLower(pattern[i])
 
@@ -157,11 +176,47 @@ public struct Utf8FuzzyMatch: Sendable {
             }
 
             if textIndex >= text.count {
-                return false
+                return nil   // character not found — reject immediately
             }
+
+            if i == 0 {
+                firstMatchIdx = textIndex
+            }
+            lastMatchIdx = textIndex
             textIndex += 1
         }
-        return true
+
+        // Step back by 1 so the DP can compute the bonus for the first matched
+        // character using its predecessor's character class.
+        let scopeFirst = firstMatchIdx > 0 ? firstMatchIdx - 1 : 0
+
+        // Backward scan: find the rightmost occurrence of the last pattern byte.
+        // The optimal alignment may end anywhere up to that position.
+        let lastPatByte = caseSensitive ? pattern[pattern.count - 1] : toLower(pattern[pattern.count - 1])
+        var scopeLast = lastMatchIdx   // fallback: the forward-scan position
+        if !caseSensitive {
+            let upper = lastPatByte >= 0x61 && lastPatByte <= 0x7A ? lastPatByte - 0x20 : lastPatByte
+            var idx = text.count - 1
+            while idx > lastMatchIdx {
+                let b = text[idx]
+                if b == lastPatByte || b == upper {
+                    scopeLast = idx
+                    break
+                }
+                idx -= 1
+            }
+        } else {
+            var idx = text.count - 1
+            while idx > lastMatchIdx {
+                if text[idx] == lastPatByte {
+                    scopeLast = idx
+                    break
+                }
+                idx -= 1
+            }
+        }
+
+        return (first: scopeFirst, last: scopeLast)
     }
 
     /// Main matching function using UTF-8 byte-level operations
@@ -174,10 +229,14 @@ public struct Utf8FuzzyMatch: Sendable {
         let patternSpan = pattern.utf8.span
         let textSpan = text.utf8.span
 
-        // Quick check using byte-level scan
-        guard containsAllBytes(pattern: patternSpan, text: textSpan, caseSensitive: caseSensitive) else {
+        // Forward + backward scan: reject early if no in-order match exists,
+        // and compute the narrowest window [scopeFirst … scopeLast] that must
+        // contain any optimal alignment.
+        guard let scope = scopeIndices(pattern: patternSpan, text: textSpan, caseSensitive: caseSensitive) else {
             return nil
         }
+        let scopeFirst = scope.first   // inclusive; DP j starts at scopeFirst + 1
+        let scopeLast  = scope.last    // inclusive; DP j ends at scopeLast + 1
 
         let patternLen = patternSpan.count
         let textLen = textSpan.count
@@ -199,9 +258,12 @@ public struct Utf8FuzzyMatch: Sendable {
 
         let stride = buffer.stride
 
-        // Initialize row 0: empty pattern matches with score 0
-        for j in 0...textLen {
-            buffer.H[j] = 0          // row 0, col j
+        // Initialize row 0: empty pattern matches with score 0.
+        // Only need to cover [0 … scopeLast+1] — cells beyond scopeLast are
+        // never read by the clamped DP or best-score loops.
+        let row0End = scopeLast + 1   // scopeLast is inclusive byte index; j = scopeLast+1 is the last DP column we touch
+        for j in 0...row0End {
+            buffer.H[j] = 0
             buffer.lastMatch[j] = -1
         }
 
@@ -216,14 +278,19 @@ public struct Utf8FuzzyMatch: Sendable {
             patternLowered = (0..<patternLen).map { toLower(patternSpan[$0]) }
         }
 
-        // Fill DP table using byte-level comparisons
+        // Fill DP table using byte-level comparisons.
+        // j is clamped to the scope window: only columns that could participate
+        // in an optimal alignment are visited.  Columns outside the window stay
+        // at Int.min/2 (set by clear()) which correctly represents "unreachable".
+        let jStart = max(1, scopeFirst + 1)
+        let jEnd   = scopeLast + 1   // inclusive; scopeLast is the byte index of the rightmost last-pattern-byte
         for i in 1...patternLen {
             // Hoist pattern byte out of inner loop — depends only on i
             let patternByte = caseSensitive ? patternSpan[i - 1] : patternLowered[i - 1]
             let rowBase = i * stride
             let prevRowBase = (i - 1) * stride
 
-            for j in 1...textLen {
+            for j in jStart...jEnd {
                 let textByte = buffer.loweredText[j - 1]
 
                 if patternByte == textByte {
@@ -249,11 +316,11 @@ public struct Utf8FuzzyMatch: Sendable {
             }
         }
 
-        // Find best score in last row
+        // Find best score in last row (clamped to scope window)
         let lastRowBase = patternLen * stride
         var bestScore = Int.min
         var bestCol = -1
-        for j in patternLen...textLen {
+        for j in max(patternLen, jStart)...jEnd {
             if buffer.H[lastRowBase + j] > bestScore {
                 bestScore = buffer.H[lastRowBase + j]
                 bestCol = j
