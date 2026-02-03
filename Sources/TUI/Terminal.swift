@@ -5,4 +5,5 @@ public protocol Terminal: Actor {
     func write(_ string: String)
     func flush()
     func readByte() -> UInt8?
+    var ttyBroken: Bool { get }
 }

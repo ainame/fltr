@@ -191,6 +191,13 @@ actor UIController {
 
         // Main event loop
         while !state.shouldExit {
+            // Exit if the controlling terminal has disconnected (e.g. shell closed the
+            // subshell, or the terminal emulator was closed).  Without this check fltr
+            // would loop forever burning CPU and memory.
+            if await terminal.ttyBroken {
+                break
+            }
+
             // Update reading status cache
             isReadingStdin = await !reader.readingComplete()
 
