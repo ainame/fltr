@@ -19,14 +19,14 @@ actor StdinReader {
 
         isReading = true
 
-        // Use regular Task to maintain structured concurrency and actor isolation
-        return Task {
-            // Read in background - readLine() is synchronous but blocks until data available
+        // Use Task.detached so the blocking readLine() loop runs on a plain OS thread
+        // and does not starve Swift's cooperative thread pool or hold the actor executor.
+        return Task.detached {
             while let line = readLine() {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else { continue }
 
-                await cache.append(trimmed)
+                await self.cache.append(trimmed)
             }
 
             // Mark as complete when stdin is exhausted
