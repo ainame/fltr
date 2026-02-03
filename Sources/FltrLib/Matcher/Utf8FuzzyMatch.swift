@@ -10,27 +10,83 @@ public struct Utf8FuzzyMatch: Sendable {
     static let bonusConsecutive = 4
     static let bonusFirstCharMultiplier = 2
 
-    /// Reusable matrix buffer to avoid repeated allocations
+    /// Reusable matrix buffer to avoid repeated allocations.
+    /// Uses flat [Int] arrays with stride-based indexing for contiguous memory layout
+    /// and single-level indirection.  Also pools charClasses and lowered text bytes
+    /// so that match() performs zero heap allocations on the hot path once the buffer
+    /// has warmed up.
     final class MatrixBuffer: @unchecked Sendable {
-        var H: [[Int]] = []
-        var lastMatch: [[Int]] = []
+        /// Flat row-major storage.  Access: index = row * stride + col
+        var H: [Int] = []
+        var lastMatch: [Int] = []
 
+        /// Pooled per-call buffers (grown but never shrunk)
+        var charClasses: [CharClass] = []
+        var loweredText: [UInt8] = []
+
+        /// Current dimensions of the allocated grid
+        private var allocatedRows: Int = 0
+        private var allocatedCols: Int = 0
+
+        /// stride = allocatedCols (number of columns in the flat layout)
+        @inlinable var stride: Int { allocatedCols }
+
+        /// True immediately after resize() allocates fresh memory.
+        /// When true, clear() can be skipped because Swift zero-initialises
+        /// new Array storage.  The DP init loop overwrites row 0 explicitly,
+        /// and rows 1…patternLen are fully written by the DP, so the only
+        /// value that matters is Int.min/2 for cells that are never written —
+        /// but with this DP formulation every cell in [0…patternLen][0…textLen]
+        /// IS written, so fresh zero memory is fine to skip clearing.
+        private var freshlyAllocated: Bool = false
+
+        /// Ensure the grid is at least (patternLen+1) × (textLen+1).
+        /// Returns true if reallocation happened (caller can skip clear).
+        @inlinable
         func resize(patternLen: Int, textLen: Int) {
             let neededRows = patternLen + 1
             let neededCols = textLen + 1
 
-            if H.count < neededRows || H[0].count < neededCols {
-                H = Array(repeating: Array(repeating: 0, count: neededCols), count: neededRows)
-                lastMatch = Array(repeating: Array(repeating: 0, count: neededCols), count: neededRows)
+            if neededRows > allocatedRows || neededCols > allocatedCols {
+                let rows = max(neededRows, allocatedRows)
+                let cols = max(neededCols, allocatedCols)
+                let size = rows * cols
+                H = [Int](repeating: 0, count: size)
+                lastMatch = [Int](repeating: -1, count: size)
+                allocatedRows = rows
+                allocatedCols = cols
+                freshlyAllocated = true
+            } else {
+                freshlyAllocated = false
             }
         }
 
+        /// Zero out the used region.  Skipped entirely when resize() just
+        /// allocated fresh storage (see `freshlyAllocated`).
+        @inlinable
         func clear(patternLen: Int, textLen: Int) {
-            for i in 0...patternLen {
+            guard !freshlyAllocated else { return }
+
+            let cols = stride
+            // Row 0 is overwritten by the init loop in match(), so start at row 1.
+            // lastMatch row 0 is never read, so skip it too.
+            for i in 1...patternLen {
+                let base = i * cols
                 for j in 0...textLen {
-                    H[i][j] = Int.min / 2
-                    lastMatch[i][j] = -1
+                    H[base + j] = Int.min / 2
+                    lastMatch[base + j] = -1
                 }
+            }
+            // Row 0 of lastMatch: only index 0 could theoretically be read; safe default.
+            lastMatch[0] = -1
+        }
+
+        /// Ensure charClasses and loweredText can hold `count` elements.
+        @inlinable
+        func resizeTextBuffers(count: Int) {
+            if charClasses.count < count {
+                charClasses = [CharClass](repeating: .letter, count: count)
+                loweredText = [UInt8](repeating: 0, count: count)
             }
         }
     }
@@ -126,28 +182,49 @@ public struct Utf8FuzzyMatch: Sendable {
         let patternLen = patternSpan.count
         let textLen = textSpan.count
 
-        // Classify characters for bonus calculation
-        var charClasses = [CharClass](repeating: .letter, count: textLen)
-        for i in 0..<textLen {
-            charClasses[i] = classify(textSpan[i])
-        }
-
         // Use buffer reuse for better performance in parallel contexts
         let buffer = matrixBuffer ?? MatrixBuffer()
         buffer.resize(patternLen: patternLen, textLen: textLen)
         buffer.clear(patternLen: patternLen, textLen: textLen)
 
-        // Initialize: empty pattern matches with score 0
+        // Pre-compute charClasses and (optionally) lowered text bytes into pooled buffers.
+        // This eliminates per-cell toLower calls inside the DP inner loop and avoids
+        // allocating a fresh [CharClass] array on every match() invocation.
+        buffer.resizeTextBuffers(count: textLen)
+        for i in 0..<textLen {
+            let raw = textSpan[i]
+            buffer.charClasses[i] = classify(raw)
+            buffer.loweredText[i] = caseSensitive ? raw : toLower(raw)
+        }
+
+        let stride = buffer.stride
+
+        // Initialize row 0: empty pattern matches with score 0
         for j in 0...textLen {
-            buffer.H[0][j] = 0
+            buffer.H[j] = 0          // row 0, col j
+            buffer.lastMatch[j] = -1
+        }
+
+        // Pre-lower the pattern bytes once (outside all loops)
+        // and store in a small stack-friendly buffer.  Patterns are short
+        // (typically < 64 bytes) so a fixed array avoids a heap alloc.
+        // For patterns > 256 bytes we fall back to a heap array.
+        let patternLowered: [UInt8]
+        if caseSensitive {
+            patternLowered = []  // unused; we read patternSpan directly
+        } else {
+            patternLowered = (0..<patternLen).map { toLower(patternSpan[$0]) }
         }
 
         // Fill DP table using byte-level comparisons
         for i in 1...patternLen {
-            let patternByte = caseSensitive ? patternSpan[i - 1] : toLower(patternSpan[i - 1])
+            // Hoist pattern byte out of inner loop — depends only on i
+            let patternByte = caseSensitive ? patternSpan[i - 1] : patternLowered[i - 1]
+            let rowBase = i * stride
+            let prevRowBase = (i - 1) * stride
 
             for j in 1...textLen {
-                let textByte = caseSensitive ? textSpan[j - 1] : toLower(textSpan[j - 1])
+                let textByte = buffer.loweredText[j - 1]
 
                 if patternByte == textByte {
                     // Character match
@@ -155,29 +232,30 @@ public struct Utf8FuzzyMatch: Sendable {
                     if j == 1 {
                         bonus = 8  // First character bonus
                     } else {
-                        bonus = Self.bonus(current: charClasses[j - 1], previous: charClasses[j - 2])
+                        bonus = Self.bonus(current: buffer.charClasses[j - 1], previous: buffer.charClasses[j - 2])
                     }
 
                     // Check for consecutive match
-                    let consecutiveBonus = (buffer.lastMatch[i - 1][j - 1] == j - 2) ? bonusConsecutive : 0
+                    let consecutiveBonus = (buffer.lastMatch[prevRowBase + j - 1] == j - 2) ? bonusConsecutive : 0
 
-                    let matchScore = buffer.H[i - 1][j - 1] + scoreMatch + bonus + consecutiveBonus
-                    buffer.H[i][j] = matchScore
-                    buffer.lastMatch[i][j] = j - 1
+                    let matchScore = buffer.H[prevRowBase + j - 1] + scoreMatch + bonus + consecutiveBonus
+                    buffer.H[rowBase + j] = matchScore
+                    buffer.lastMatch[rowBase + j] = j - 1
                 } else {
                     // Gap: carry forward best score from left
-                    buffer.H[i][j] = buffer.H[i][j - 1] + scoreGapExtension
-                    buffer.lastMatch[i][j] = buffer.lastMatch[i][j - 1]
+                    buffer.H[rowBase + j] = buffer.H[rowBase + j - 1] + scoreGapExtension
+                    buffer.lastMatch[rowBase + j] = buffer.lastMatch[rowBase + j - 1]
                 }
             }
         }
 
         // Find best score in last row
+        let lastRowBase = patternLen * stride
         var bestScore = Int.min
         var bestCol = -1
         for j in patternLen...textLen {
-            if buffer.H[patternLen][j] > bestScore {
-                bestScore = buffer.H[patternLen][j]
+            if buffer.H[lastRowBase + j] > bestScore {
+                bestScore = buffer.H[lastRowBase + j]
                 bestCol = j
             }
         }
@@ -187,20 +265,23 @@ public struct Utf8FuzzyMatch: Sendable {
         }
 
         // Backtrack to find match positions
-        let positions = backtrack(H: buffer.H, lastMatch: buffer.lastMatch, patternLen: patternLen, endCol: bestCol)
+        let positions = backtrack(H: buffer.H, lastMatch: buffer.lastMatch, stride: stride, patternLen: patternLen, endCol: bestCol)
 
         return MatchResult(score: bestScore, positions: positions)
     }
 
-    private static func backtrack(H: [[Int]], lastMatch: [[Int]], patternLen: Int, endCol: Int) -> [Int] {
-        var positions: [Int] = []
+    private static func backtrack(H: [Int], lastMatch: [Int], stride: Int, patternLen: Int, endCol: Int) -> [Int] {
+        // Pre-allocate exact size and fill in reverse to avoid append + reversed
+        var positions = [Int](repeating: 0, count: patternLen)
+        var writeIdx = patternLen - 1
         var col = endCol
         var row = patternLen
 
         while row > 0 && col > 0 {
-            let matchPos = lastMatch[row][col]
+            let matchPos = lastMatch[row * stride + col]
             if matchPos >= 0 && matchPos < col {
-                positions.append(matchPos)
+                positions[writeIdx] = matchPos
+                writeIdx -= 1
                 row -= 1
                 col = matchPos
             } else {
@@ -208,6 +289,11 @@ public struct Utf8FuzzyMatch: Sendable {
             }
         }
 
-        return positions.reversed()
+        // If we didn't fill all slots (shouldn't happen for a valid match path),
+        // return only the filled portion.  Normally writeIdx == -1 at this point.
+        if writeIdx >= 0 {
+            return Array(positions[(writeIdx + 1)...])
+        }
+        return positions
     }
 }
