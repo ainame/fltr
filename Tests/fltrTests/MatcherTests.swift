@@ -718,3 +718,137 @@ func scopeLongPathScattered() {
     #expect(result!.positions[0] < result!.positions[1])
     #expect(result!.positions[1] < result!.positions[2])
 }
+
+// MARK: - ChunkCache Unit Tests
+
+/// Helper: build a result set of the given size with synthetic items.
+private func syntheticResults(_ count: Int, prefix: String = "item") -> [MatchedItem] {
+    (0..<count).map {
+        MatchedItem(
+            item: Item(index: $0, text: "\(prefix)_\($0)"),
+            matchResult: MatchResult(score: count - $0, positions: [$0])
+        )
+    }
+}
+
+@Test("ChunkCache — add and exact lookup")
+func chunkCacheAddLookup() {
+    let cache = ChunkCache()
+    let results = syntheticResults(5)
+
+    // Store into a full chunk (chunkCount == Chunk.capacity)
+    cache.add(chunkIndex: 0, chunkCount: Chunk.capacity, query: "ab", results: results)
+
+    // Exact hit
+    let hit = cache.lookup(chunkIndex: 0, chunkCount: Chunk.capacity, query: "ab")
+    #expect(hit != nil)
+    #expect(hit!.count == 5)
+
+    // Miss on wrong query
+    #expect(cache.lookup(chunkIndex: 0, chunkCount: Chunk.capacity, query: "ac") == nil)
+
+    // Miss on wrong chunk index
+    #expect(cache.lookup(chunkIndex: 1, chunkCount: Chunk.capacity, query: "ab") == nil)
+}
+
+@Test("ChunkCache — partial chunk is never cached")
+func chunkCachePartialChunkGuard() {
+    let cache = ChunkCache()
+    let results = syntheticResults(3)
+
+    // chunkCount < Chunk.capacity → add is a no-op
+    cache.add(chunkIndex: 0, chunkCount: 42, query: "x", results: results)
+    #expect(cache.lookup(chunkIndex: 0, chunkCount: 42, query: "x") == nil)
+
+    // lookup also returns nil for partial chunks even if data were somehow present
+    #expect(cache.lookup(chunkIndex: 0, chunkCount: Chunk.capacity, query: "x") == nil)
+}
+
+@Test("ChunkCache — selectivity gate drops high-count results")
+func chunkCacheSelectivityGate() {
+    let cache = ChunkCache()
+
+    // Exactly at the gate (queryCacheMax == 20) — should be stored
+    let atGate = syntheticResults(ChunkCache.queryCacheMax)
+    cache.add(chunkIndex: 0, chunkCount: Chunk.capacity, query: "a", results: atGate)
+    #expect(cache.lookup(chunkIndex: 0, chunkCount: Chunk.capacity, query: "a") != nil)
+
+    // One over the gate — should be silently dropped
+    let overGate = syntheticResults(ChunkCache.queryCacheMax + 1)
+    cache.add(chunkIndex: 1, chunkCount: Chunk.capacity, query: "b", results: overGate)
+    #expect(cache.lookup(chunkIndex: 1, chunkCount: Chunk.capacity, query: "b") == nil)
+}
+
+@Test("ChunkCache — empty query is never cached or looked up")
+func chunkCacheEmptyQuery() {
+    let cache = ChunkCache()
+    cache.add(chunkIndex: 0, chunkCount: Chunk.capacity, query: "", results: syntheticResults(1))
+    #expect(cache.lookup(chunkIndex: 0, chunkCount: Chunk.capacity, query: "") == nil)
+}
+
+@Test("ChunkCache — search finds prefix sub-key")
+func chunkCacheSearchPrefix() {
+    let cache = ChunkCache()
+    let narrowResults = syntheticResults(3, prefix: "narrow")
+
+    // Cache results for "ab" (a prefix of "abc")
+    cache.add(chunkIndex: 0, chunkCount: Chunk.capacity, query: "ab", results: narrowResults)
+
+    // search("abc") should find "ab" as a prefix hit
+    let hit = cache.search(chunkIndex: 0, chunkCount: Chunk.capacity, query: "abc")
+    #expect(hit != nil)
+    #expect(hit!.count == 3)
+}
+
+@Test("ChunkCache — search finds suffix sub-key")
+func chunkCacheSearchSuffix() {
+    let cache = ChunkCache()
+    let narrowResults = syntheticResults(2, prefix: "sfx")
+
+    // Cache results for "bc" (a suffix of "abc")
+    cache.add(chunkIndex: 0, chunkCount: Chunk.capacity, query: "bc", results: narrowResults)
+
+    // search("abc") should find "bc" as a suffix hit
+    let hit = cache.search(chunkIndex: 0, chunkCount: Chunk.capacity, query: "abc")
+    #expect(hit != nil)
+    #expect(hit!.count == 2)
+}
+
+@Test("ChunkCache — search prefers longer sub-key over shorter")
+func chunkCacheSearchLongestFirst() {
+    let cache = ChunkCache()
+
+    // Cache "a" (1 char) and "ab" (2 chars) for the same chunk
+    cache.add(chunkIndex: 0, chunkCount: Chunk.capacity, query: "a",  results: syntheticResults(10, prefix: "short"))
+    cache.add(chunkIndex: 0, chunkCount: Chunk.capacity, query: "ab", results: syntheticResults(4,  prefix: "long"))
+
+    // search("abc") tries prefixes longest-first: "ab" before "a"
+    let hit = cache.search(chunkIndex: 0, chunkCount: Chunk.capacity, query: "abc")
+    #expect(hit != nil)
+    #expect(hit!.count == 4, "Should return the longer (more selective) cached set")
+}
+
+@Test("ChunkCache — search returns nil when no sub-key cached")
+func chunkCacheSearchMiss() {
+    let cache = ChunkCache()
+    // Nothing cached at all
+    #expect(cache.search(chunkIndex: 0, chunkCount: Chunk.capacity, query: "xyz") == nil)
+
+    // Cache something on a different chunk
+    cache.add(chunkIndex: 5, chunkCount: Chunk.capacity, query: "xy", results: syntheticResults(1))
+    #expect(cache.search(chunkIndex: 0, chunkCount: Chunk.capacity, query: "xyz") == nil)
+}
+
+@Test("ChunkCache — clear wipes all entries")
+func chunkCacheClear() {
+    let cache = ChunkCache()
+    cache.add(chunkIndex: 0, chunkCount: Chunk.capacity, query: "a", results: syntheticResults(1))
+    cache.add(chunkIndex: 1, chunkCount: Chunk.capacity, query: "b", results: syntheticResults(2))
+
+    #expect(cache.lookup(chunkIndex: 0, chunkCount: Chunk.capacity, query: "a") != nil)
+
+    cache.clear()
+
+    #expect(cache.lookup(chunkIndex: 0, chunkCount: Chunk.capacity, query: "a") == nil)
+    #expect(cache.lookup(chunkIndex: 1, chunkCount: Chunk.capacity, query: "b") == nil)
+}

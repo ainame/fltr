@@ -21,4 +21,11 @@ actor ItemCache {
     func isEmpty() -> Bool {
         chunkList.isEmpty
     }
+
+    /// Return a value-type snapshot of the underlying ChunkList.
+    /// Safe to send across actor boundaries — ChunkList is a Sendable struct
+    /// and the snapshot is taken under actor isolation.
+    func snapshotChunkList() -> ChunkList {
+        chunkList
+    }
 }

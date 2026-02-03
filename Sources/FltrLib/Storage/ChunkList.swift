@@ -54,4 +54,12 @@ struct ChunkList: Sendable {
         }
         return nil
     }
+
+    // MARK: - Chunk-level access (for per-chunk caching)
+
+    /// Number of chunks currently allocated.
+    var chunkCount: Int { chunks.count }
+
+    /// Direct access to a chunk by its index in the list.
+    func chunk(at index: Int) -> Chunk { chunks[index] }
 }

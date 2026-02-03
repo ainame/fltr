@@ -69,6 +69,10 @@ actor UIController {
     private var mergerCacheItemCount: Int = 0
     private static let mergerCacheMax = 100_000
 
+    // Per-chunk result cache (mirrors fzf's ChunkCache).
+    // Shared across TaskGroup partitions; internally locked.
+    private let chunkCache = ChunkCache()
+
     init(terminal: any Terminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(50)) {
         self.terminal = terminal
         self.matcher = matcher
@@ -126,7 +130,7 @@ actor UIController {
 
         // Start debounced query update task
         // This task runs matching OUTSIDE the actor to avoid blocking input
-        let debounceTask = Task { [engine, previewCommand, previewManager] in
+        let debounceTask = Task { [engine, chunkCache, previewCommand, previewManager] in
             for await update in queryUpdateStream.debounce(for: debounceDelay) {
                 // Wait for previous task to complete before starting new one
                 // This ensures state.matchedItems has the latest results for incremental filtering
@@ -138,6 +142,7 @@ actor UIController {
                 let previousQuerySnapshot = self.state.previousQuery
                 let currentMatchesSnapshot = self.state.matchedItems
                 let allItemsSnapshot = self.allItems
+                let chunkListSnapshot = await self.cache.snapshotChunkList()
 
                 // Update previousQuery for next iteration
                 self.updatePreviousQuery(update.query)
@@ -172,7 +177,14 @@ actor UIController {
                     } else {
                         // Match items (this is the expensive operation)
                         let matchStart = Date()
-                        let matchedResults = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
+                        let matchedResults: [MatchedItem]
+                        if canUseIncremental {
+                            // Incremental path: candidate set is a flat [Item], not chunk-aligned
+                            matchedResults = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
+                        } else {
+                            // Full-search path: use per-chunk cache for keystroke-2+ speed
+                            matchedResults = await engine.matchChunksParallel(pattern: update.query, chunkList: chunkListSnapshot, cache: chunkCache)
+                        }
                         let matchTime = Date().timeIntervalSince(matchStart) * 1000
 
                         let totalTime = Date().timeIntervalSince(overallStart) * 1000
@@ -245,9 +257,10 @@ actor UIController {
                         currentMatchTask?.cancel()
 
                         // Fetch items and re-match in background (doesn't block input!)
-                        fetchItemsTask = Task.detached { [cache, engine, previewCommand, previewManager] in
-                            // Get all items outside the actor (this is the slow copy operation)
+                        fetchItemsTask = Task.detached { [cache, engine, chunkCache, previewCommand, previewManager] in
+                            // Get all items and chunk-list snapshot outside the actor
                             let newItems = await cache.getAllItems()
+                            let chunkListSnapshot = await cache.snapshotChunkList()
 
                             // Determine search items
                             let query = await self.state.query
@@ -263,11 +276,17 @@ actor UIController {
                             // Update previousQuery before matching to prevent race condition
                             await self.updatePreviousQuery(query)
 
-                            // Item count changed → invalidate stale merger cache before matching
+                            // Item count changed → invalidate stale caches before matching
                             await self.invalidateMergerCache()
+                            chunkCache.clear()
 
-                            // Match items
-                            let results = await engine.matchItemsParallel(pattern: query, items: searchItems)
+                            // Match items: full-search uses per-chunk cache; incremental stays flat
+                            let results: [MatchedItem]
+                            if canUseIncremental {
+                                results = await engine.matchItemsParallel(pattern: query, items: searchItems)
+                            } else {
+                                results = await engine.matchChunksParallel(pattern: query, chunkList: chunkListSnapshot, cache: chunkCache)
+                            }
 
                             // Cache the fresh results on the full-search path
                             if !canUseIncremental {

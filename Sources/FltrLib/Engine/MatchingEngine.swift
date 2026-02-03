@@ -163,6 +163,116 @@ struct MatchingEngine: Sendable {
         }
     }
 
+    // MARK: - Chunk-parallel matching with per-chunk cache
+
+    /// Match items by iterating the ChunkList chunk-by-chunk, consulting the
+    /// ChunkCache at each step.  Per-chunk flow:
+    ///   1. Exact cache hit  → return cached results (zero matching work).
+    ///   2. Search hit       → re-match only the cached subset (narrowed).
+    ///   3. Full miss        → match every item in the chunk.
+    ///   4. Store result if selectivity gate passes (count ≤ queryCacheMax).
+    ///
+    /// Parallelisation and topN / cancellation logic mirrors
+    /// ``matchItemsParallel``.
+    func matchChunksParallel(pattern: String, chunkList: ChunkList, cache: ChunkCache) async -> [MatchedItem] {
+        guard !pattern.isEmpty else {
+            var all: [MatchedItem] = []
+            all.reserveCapacity(chunkList.count)
+            for ci in 0..<chunkList.chunkCount {
+                let chunk = chunkList.chunk(at: ci)
+                for i in 0..<chunk.count {
+                    all.append(MatchedItem(item: chunk[i], matchResult: MatchResult(score: 0, positions: [])))
+                }
+            }
+            return all
+        }
+
+        let totalChunks = chunkList.chunkCount
+        guard totalChunks > 0 else { return [] }
+
+        let cpuCount = ProcessInfo.processInfo.activeProcessorCount
+        let chunksPerPartition = max(1, totalChunks / cpuCount)
+
+        return await withTaskGroup(of: [MatchedItem].self) { group in
+            var startIdx = 0
+            while startIdx < totalChunks {
+                let endIdx = min(startIdx + chunksPerPartition, totalChunks)
+                let partitionStart = startIdx
+                let partitionEnd   = endIdx
+
+                group.addTask {
+                    guard !Task.isCancelled else { return [] }
+
+                    return Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
+                        var partitionMatches: [MatchedItem] = []
+
+                        for ci in partitionStart..<partitionEnd {
+                            guard !Task.isCancelled else { return [] }
+
+                            let chunk = chunkList.chunk(at: ci)
+
+                            // 1. Exact cache hit — zero matching work
+                            if let cached = cache.lookup(chunkIndex: ci, chunkCount: chunk.count, query: pattern) {
+                                partitionMatches.append(contentsOf: cached)
+                                continue
+                            }
+
+                            // 2. Search hit — narrow the candidate set
+                            let candidates = cache.search(chunkIndex: ci, chunkCount: chunk.count, query: pattern)
+
+                            var chunkResults: [MatchedItem] = []
+
+                            if let candidates = candidates {
+                                for candidate in candidates {
+                                    if let result = self.matcher.match(pattern: pattern, text: candidate.item.text) {
+                                        chunkResults.append(MatchedItem(item: candidate.item, matchResult: result))
+                                    }
+                                }
+                            } else {
+                                // 3. Full miss — match every item in the chunk
+                                for i in 0..<chunk.count {
+                                    let item = chunk[i]
+                                    if let result = self.matcher.match(pattern: pattern, text: item.text) {
+                                        chunkResults.append(MatchedItem(item: item, matchResult: result))
+                                    }
+                                }
+                            }
+
+                            // 4. Store if selectivity gate passes
+                            cache.add(chunkIndex: ci, chunkCount: chunk.count, query: pattern, results: chunkResults)
+
+                            partitionMatches.append(contentsOf: chunkResults)
+                        }
+                        return partitionMatches
+                    }
+                }
+
+                startIdx = endIdx
+            }
+
+            // Collect with early termination
+            var allMatches: [MatchedItem] = []
+            allMatches.reserveCapacity(min(chunkList.count, maxResults * 2))
+
+            for await partitionResults in group {
+                guard !Task.isCancelled else { break }
+                allMatches.append(contentsOf: partitionResults)
+
+                if allMatches.count >= maxResults + (maxResults / 2) {
+                    group.cancelAll()
+                    break
+                }
+            }
+
+            if allMatches.count > maxResults {
+                return topN(from: allMatches, count: maxResults)
+            } else {
+                allMatches.sort { $0.matchResult.score > $1.matchResult.score }
+                return allMatches
+            }
+        }
+    }
+
     /// Select top N items by score without fully sorting
     /// Uses partial sort: O(n + k log k) instead of O(n log n)
     /// where n = input size, k = count
