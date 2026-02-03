@@ -113,22 +113,32 @@ public struct Utf8FuzzyMatch: Sendable {
         }
     }
 
-    /// Calculate bonus for matching at this position
-    @inlinable
-    static func bonus(current: CharClass, previous: CharClass) -> Int {
-        switch (current, previous) {
-        case (_, .whitespace):
-            return 8  // bonusBoundary - after whitespace
-        case (_, .delimiter):
-            return 7  // bonusBoundary - 1 - after delimiter
-        case (.upper, .lower):
-            return 7  // camelCase transition
-        case (.lower, .upper):
-            return 6  // after uppercase (but we're lowercase)
-        default:
-            return 0
+    /// Precomputed 6×6 bonus table.  Row = previous class index, col = current
+    /// class index.  Flat layout: bonusTable[previous.index * 6 + current.index].
+    /// Initialised once at module load; replaces the per-cell switch in the DP
+    /// inner loop with a single array access.
+    @usableFromInline
+    static let bonusTable: [Int] = {
+        // Index mapping (must match CharClass.index):
+        //   0 = whitespace, 1 = delimiter, 2 = lower, 3 = upper, 4 = letter, 5 = number
+        let cases: [CharClass] = [.whitespace, .delimiter, .lower, .upper, .letter, .number]
+        var t = [Int](repeating: 0, count: 36)
+        for prev in 0..<6 {
+            for cur in 0..<6 {
+                let p = cases[prev]
+                let c = cases[cur]
+                // Mirror the exact logic from the original bonus() switch
+                switch (c, p) {
+                case (_, .whitespace): t[prev * 6 + cur] = 8
+                case (_, .delimiter):  t[prev * 6 + cur] = 7
+                case (.upper, .lower): t[prev * 6 + cur] = 7
+                case (.lower, .upper): t[prev * 6 + cur] = 6
+                default:               t[prev * 6 + cur] = 0
+                }
+            }
         }
-    }
+        return t
+    }()
 
     /// Fast ASCII lowercase
     @inlinable
@@ -294,12 +304,12 @@ public struct Utf8FuzzyMatch: Sendable {
                 let textByte = buffer.loweredText[j - 1]
 
                 if patternByte == textByte {
-                    // Character match
+                    // Character match — bonus via precomputed table (single array access)
                     let bonus: Int
                     if j == 1 {
                         bonus = 8  // First character bonus
                     } else {
-                        bonus = Self.bonus(current: buffer.charClasses[j - 1], previous: buffer.charClasses[j - 2])
+                        bonus = Self.bonusTable[buffer.charClasses[j - 2].index * 6 + buffer.charClasses[j - 1].index]
                     }
 
                     // Check for consecutive match

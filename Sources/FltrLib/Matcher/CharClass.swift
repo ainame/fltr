@@ -10,6 +10,20 @@ public enum CharClass: Sendable {
     case letter
     case number
 
+    /// Stable integer index for bonus-table lookups.  Order must match
+    /// the initialiser in Utf8FuzzyMatch.bonusTable.
+    @inlinable
+    var index: Int {
+        switch self {
+        case .whitespace: return 0
+        case .delimiter:  return 1
+        case .lower:      return 2
+        case .upper:      return 3
+        case .letter:     return 4
+        case .number:     return 5
+        }
+    }
+
     // Static delimiter set to avoid repeated allocations
     @usableFromInline
     internal static let delimiters: Set<Character> = ["_", "-", "/", "\\", ".", ":", " ", "\t"]
