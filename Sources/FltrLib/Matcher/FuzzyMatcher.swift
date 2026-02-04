@@ -11,16 +11,22 @@ struct FuzzyMatcher: Sendable {
     /// Match a pattern against text
     /// Supports space-separated tokens as AND operator (all tokens must match)
     func match(pattern: String, text: String) -> MatchResult? {
-        // Split pattern by whitespace for AND matching (optimized to avoid intermediate allocations)
-        let tokens = pattern.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-
-        guard !tokens.isEmpty else {
+        guard !pattern.isEmpty else {
             return MatchResult(score: 0, positions: [])
         }
 
-        // Single token - use standard matching
+        // Fast path: no space → single token, skip split entirely
+        guard pattern.utf8.contains(0x20) else {
+            return Utf8FuzzyMatch.match(pattern: pattern, text: text, caseSensitive: caseSensitive)
+        }
+
+        // Multi-token: split and AND-match
+        let tokens = pattern.split(separator: " ", omittingEmptySubsequences: true)
+        guard !tokens.isEmpty else {
+            return MatchResult(score: 0, positions: [])
+        }
         if tokens.count == 1 {
-            return Utf8FuzzyMatch.match(pattern: tokens[0], text: text, caseSensitive: caseSensitive)
+            return Utf8FuzzyMatch.match(pattern: String(tokens[0]), text: text, caseSensitive: caseSensitive)
         }
 
         // Multiple tokens - all must match (AND behavior)
@@ -28,7 +34,7 @@ struct FuzzyMatcher: Sendable {
         var allPositions: [Int] = []
 
         for token in tokens {
-            guard let result = Utf8FuzzyMatch.match(pattern: token, text: text, caseSensitive: caseSensitive) else {
+            guard let result = Utf8FuzzyMatch.match(pattern: String(token), text: text, caseSensitive: caseSensitive) else {
                 // If any token doesn't match, the whole pattern doesn't match
                 return nil
             }

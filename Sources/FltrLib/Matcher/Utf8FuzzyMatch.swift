@@ -1,447 +1,396 @@
 import Foundation
 
-/// Optimized fuzzy matching using UTF-8 byte-level operations
-/// This version uses String.utf8.span for zero-copy access to avoid Character array allocations
+/// Optimized fuzzy matching using UTF-8 byte-level operations.
+/// Mirrors fzf's FuzzyMatchV2 Phase 1–4 structure:
+///   Phase 1 – asciiFuzzyIndex  (scope narrowing: forward + backward scan)
+///   Phase 2 – single-pass H0 / C0 / B / T computation
+///   Phase 3 – DP fill with per-row left bound F[i], width-relative indexing
+///   Phase 4 – backtrack by re-comparing H / C  (no lastMatch matrix)
+///
+/// Key perf techniques from fzf:
+///   • int16 scores            – halves memory bandwidth vs Int64
+///   • width = lastIdx − F[0] + 1 – narrow matrix, not full textLen
+///   • per-row left bound F[i] – skips impossible columns per row
+///   • slab-style pooled buffer via @TaskLocal
+///   • 128-entry ASCII LUT for classify  (single load, no branches)
+///   • precomputed 6×6 bonus table + per-position B[] cache
+///   • byte-level toLower  (ASCII fast path)
 public struct Utf8FuzzyMatch: Sendable {
-    // Scoring constants (from fzf)
-    static let scoreMatch = 16
-    static let scoreGapStart = -3
-    static let scoreGapExtension = -1
-    static let bonusBoundary = scoreMatch / 2          // 8  – threshold for consecutive-chunk break
-    static let bonusConsecutive = -(scoreGapStart + scoreGapExtension)  // 4
-    static let bonusFirstCharMultiplier = 2
 
-    /// Reusable matrix buffer to avoid repeated allocations.
-    /// Uses flat [Int] arrays with stride-based indexing for contiguous memory layout
-    /// and single-level indirection.  Also pools charClasses and lowered text bytes
-    /// so that match() performs zero heap allocations on the hot path once the buffer
-    /// has warmed up.
+    // ─── Scoring constants (identical to fzf) ─────────────────────────────
+    static let scoreMatch:               Int16 = 16
+    static let scoreGapStart:            Int16 = -3
+    static let scoreGapExtension:        Int16 = -1
+    static let bonusBoundary:            Int16 = scoreMatch / 2           // 8
+    static let bonusConsecutive:         Int16 = -(scoreGapStart + scoreGapExtension) // 4
+    static let bonusFirstCharMultiplier: Int16 = 2
+
+    // ─── 128-entry ASCII class LUT ─────────────────────────────────────────
+    // Maps each ASCII byte (0…127) directly to a class index (0…5).
+    // Non-ASCII bytes (≥ 128) are treated as class 4 (letter).
+    //   0 = whitespace   (\t \n \r SP)
+    //   1 = delimiter    (_ - / \ . :)
+    //   2 = lower        (a-z)
+    //   3 = upper        (A-Z)
+    //   4 = letter       (everything else / non-ASCII)
+    //   5 = number       (0-9)
+    // Mirrors fzf's asciiCharClasses[] initialised in Init("path").
+    @usableFromInline
+    static let classLUT: [UInt8] = {
+        var lut = [UInt8](repeating: 4, count: 128)   // default: letter
+        // whitespace
+        lut[0x09] = 0; lut[0x0A] = 0; lut[0x0D] = 0; lut[0x20] = 0
+        // delimiter: _ - / \ . :
+        lut[0x5F] = 1; lut[0x2D] = 1; lut[0x2F] = 1
+        lut[0x5C] = 1; lut[0x2E] = 1; lut[0x3A] = 1
+        // lower a-z
+        for b in 0x61...0x7A { lut[b] = 2 }
+        // upper A-Z
+        for b in 0x41...0x5A { lut[b] = 3 }
+        // number 0-9
+        for b in 0x30...0x39 { lut[b] = 5 }
+        return lut
+    }()
+
+    // ─── 6×6 bonus table  (path scheme) ────────────────────────────────────
+    // bonusMatrix[prev][cur].  Flat: index = prev * 6 + cur
+    @usableFromInline
+    static let bonusTable: [Int16] = {
+        let bWhite:    Int16 = 8   // path: bonusBoundaryWhite == bonusBoundary
+        let bDelim:    Int16 = 9   // bonusBoundary + 1
+        let bCamel:    Int16 = 7   // bonusBoundary + scoreGapExtension
+
+        var t = [Int16](repeating: 0, count: 36)
+        // isWord: classes 2 (lower), 3 (upper), 4 (letter), 5 (number)
+        for c in 0..<6 {
+            let isWord = (c == 2 || c == 3 || c == 4 || c == 5)
+            if isWord {
+                t[0*6+c] = bWhite   // prev = whitespace
+                t[1*6+c] = bDelim   // prev = delimiter
+            }
+        }
+        // camelCase: lower(2)→upper(3)
+        t[2*6+3] = bCamel
+        // (non-number)→number: prev ∈ {2,3,4} only.
+        // prev=0 (whitespace) and prev=1 (delimiter) already have the higher
+        // boundary bonus set above; fzf's boundary check fires first (continue).
+        for p in [2,3,4] { t[p*6+5] = bCamel }
+        // number→number stays 0 (already default)
+        return t
+    }()
+
+    // ─── Pooled slab buffer ────────────────────────────────────────────────
+    /// I16 layout (window width W, pattern length M):
+    ///   H0  [0       … W)            row-0 scores
+    ///   C0  [W       … 2W)           row-0 consecutive counts
+    ///   B   [2W      … 3W)           per-position bonus
+    ///   H   [3W      … 3W + W*M)     DP rows 0…M−1
+    ///   C   [3W+W*M  … 3W + 2W*M)   consecutive rows 0…M−1
+    ///
+    /// I32 layout:
+    ///   F   [0 … M)     first-occurrence (global index) of each pattern byte
+    ///   T   [M … M+W)   lowered text bytes as Int32
     final class MatrixBuffer: @unchecked Sendable {
-        /// Flat row-major storage.  Access: index = row * stride + col
-        var H: [Int] = []
-        var lastMatch: [Int] = []
-        /// Consecutive-match count at each cell (mirrors fzf's C matrix).
-        /// C[i][j] = length of the consecutive matching chunk ending at (i, j).
-        var C: [Int] = []
+        var I16: [Int16] = []
+        var I32: [Int32] = []
 
-        /// Pooled per-call buffers (grown but never shrunk)
-        var charClasses: [CharClass] = []
-        var loweredText: [UInt8] = []
-        /// Per-position bonus cache (mirrors fzf's B array)
-        var bonusCache: [Int] = []
-
-        /// Current dimensions of the allocated grid
-        private var allocatedRows: Int = 0
-        private var allocatedCols: Int = 0
-
-        /// stride = allocatedCols (number of columns in the flat layout)
-        @inlinable var stride: Int { allocatedCols }
-
-        /// True immediately after resize() allocates fresh memory.
-        /// When true, clear() can be skipped because Swift zero-initialises
-        /// new Array storage.  The DP init loop overwrites row 0 explicitly,
-        /// and rows 1…patternLen are fully written by the DP, so the only
-        /// value that matters is Int.min/2 for cells that are never written —
-        /// but with this DP formulation every cell in [0…patternLen][0…textLen]
-        /// IS written, so fresh zero memory is fine to skip clearing.
-        private var freshlyAllocated: Bool = false
-
-        /// Ensure the grid is at least (patternLen+1) × (textLen+1).
-        /// Returns true if reallocation happened (caller can skip clear).
-        @inlinable
-        func resize(patternLen: Int, textLen: Int) {
-            let neededRows = patternLen + 1
-            let neededCols = textLen + 1
-
-            if neededRows > allocatedRows || neededCols > allocatedCols {
-                let rows = max(neededRows, allocatedRows)
-                let cols = max(neededCols, allocatedCols)
-                let size = rows * cols
-                H = [Int](repeating: 0, count: size)
-                lastMatch = [Int](repeating: -1, count: size)
-                C = [Int](repeating: 0, count: size)
-                allocatedRows = rows
-                allocatedCols = cols
-                freshlyAllocated = true
-            } else {
-                freshlyAllocated = false
-            }
+        @inlinable func ensureI16(_ n: Int) {
+            if I16.count < n { I16 = [Int16](repeating: 0, count: n) }
         }
-
-        /// Zero out the used region.  Skipped entirely when resize() just
-        /// allocated fresh storage (see `freshlyAllocated`).
-        @inlinable
-        func clear(patternLen: Int, textLen: Int) {
-            guard !freshlyAllocated else { return }
-
-            let cols = stride
-            // Row 0 is overwritten by the init loop in match(), so start at row 1.
-            // lastMatch row 0 is never read, so skip it too.
-            for i in 1...patternLen {
-                let base = i * cols
-                for j in 0...textLen {
-                    H[base + j] = Int.min / 2
-                    lastMatch[base + j] = -1
-                    C[base + j] = 0
-                }
-            }
-            // Row 0 of lastMatch: only index 0 could theoretically be read; safe default.
-            lastMatch[0] = -1
-        }
-
-        /// Ensure charClasses and loweredText can hold `count` elements.
-        @inlinable
-        func resizeTextBuffers(count: Int) {
-            if charClasses.count < count {
-                charClasses = [CharClass](repeating: .letter, count: count)
-                loweredText = [UInt8](repeating: 0, count: count)
-                bonusCache = [Int](repeating: 0, count: count)
-            }
+        @inlinable func ensureI32(_ n: Int) {
+            if I32.count < n { I32 = [Int32](repeating: 0, count: n) }
         }
     }
 
     @TaskLocal static var matrixBuffer: MatrixBuffer?
 
-    /// Byte-level character classification
+    // ─── ASCII helpers ─────────────────────────────────────────────────────
     @inlinable
-    static func classify(_ byte: UInt8) -> CharClass {
-        switch byte {
-        case 0x09, 0x0A, 0x0D, 0x20:  // \t, \n, \r, space
-            return .whitespace
-        case 0x5F, 0x2D, 0x2F, 0x5C, 0x2E, 0x3A:  // _ - / \ . :
-            return .delimiter
-        case 0x30...0x39:  // 0-9
-            return .number
-        case 0x41...0x5A:  // A-Z
-            return .upper
-        case 0x61...0x7A:  // a-z
-            return .lower
-        default:
-            // Non-ASCII or other - treat as letter
-            return .letter
-        }
+    static func toLower(_ b: UInt8) -> UInt8 {
+        (b >= 0x41 && b <= 0x5A) ? (b | 0x20) : b
     }
 
-    /// Precomputed 6×6 bonus table.  Row = previous class index, col = current
-    /// class index.  Flat layout: bonusTable[previous.index * 6 + current.index].
-    /// Mirrors fzf's bonusFor() with the "path" scheme:
-    ///   bonusBoundaryWhite     = 8   (scoreMatch / 2)
-    ///   bonusBoundaryDelimiter = 9   (scoreMatch / 2 + 1)
-    ///   bonusCamel123          = 7   (bonusBoundary + scoreGapExtension)
-    /// Boundary bonuses only fire when current class is a word character
-    /// (lower / upper / letter / number).
-    @usableFromInline
-    static let bonusTable: [Int] = {
-        // Index mapping (must match CharClass.index):
-        //   0 = whitespace, 1 = delimiter, 2 = lower, 3 = upper, 4 = letter, 5 = number
-        let bonusBoundaryWhite     = 8   // scoreMatch / 2
-        let bonusBoundaryDelimiter = 9   // scoreMatch / 2 + 1  (path scheme)
-        let bonusCamel123          = 7   // bonusBoundary + scoreGapExtension
-
-        var t = [Int](repeating: 0, count: 36)
-        let cases: [CharClass] = [.whitespace, .delimiter, .lower, .upper, .letter, .number]
-        for prev in 0..<6 {
-            for cur in 0..<6 {
-                let p = cases[prev]
-                let c = cases[cur]
-
-                // Boundary bonuses: only when current is a word character
-                let isWord = (c == .lower || c == .upper || c == .letter || c == .number)
-                if isWord {
-                    switch p {
-                    case .whitespace:
-                        t[prev * 6 + cur] = bonusBoundaryWhite
-                        continue
-                    case .delimiter:
-                        t[prev * 6 + cur] = bonusBoundaryDelimiter
-                        continue
-                    default:
-                        break
-                    }
-                }
-
-                // camelCase: lower → upper  OR  (non-number) → number
-                if p == .lower && c == .upper {
-                    t[prev * 6 + cur] = bonusCamel123
-                } else if p != .number && c == .number {
-                    t[prev * 6 + cur] = bonusCamel123
-                }
-                // All other transitions: 0 (already initialised)
-            }
-        }
-        return t
-    }()
-
-    /// Fast ASCII lowercase
+    /// Classify a byte to class index 0…5 using the LUT.
+    /// Non-ASCII (≥ 128) → 4 (letter).
     @inlinable
-    static func toLower(_ byte: UInt8) -> UInt8 {
-        if byte >= 0x41 && byte <= 0x5A {  // A-Z
-            return byte + 0x20  // Convert to a-z
-        }
-        return byte
+    static func classOf(_ b: UInt8) -> Int {
+        Int(b < 128 ? classLUT[Int(b)] : 4)
     }
 
-    /// Compute the DP window bounds via a forward + backward byte scan.
-    ///
-    /// Forward pass: find the earliest positions where each pattern byte can
-    /// match in order (same logic as the old containsAllBytes).  Record where
-    /// pattern[0] first matched and where pattern[last] first matched.
-    ///
-    /// Backward pass: from the end of the text, find the *last* occurrence of
-    /// the final pattern byte.  This widens the right bound so the DP can find
-    /// the globally-best alignment, not just the leftmost one.
-    ///
-    /// Returns nil when no in-order match exists (early rejection, zero DP work).
-    /// Otherwise returns (first, last) where:
-    ///   first — inclusive left bound for the DP j-loop (stepped back by 1 from
-    ///           the first pattern-byte match so the bonus calculation can see
-    ///           the preceding character, mirroring fzf's asciiFuzzyIndex).
-    ///   last  — inclusive right bound (the column index of the rightmost
-    ///           occurrence of the last pattern byte).
+    // ─── Phase 1: asciiFuzzyIndex ──────────────────────────────────────────
+    /// Forward scan: populate F[0…M−1].  Backward scan: widen right bound.
+    /// Returns nil on rejection.
     @inlinable
-    static func scopeIndices(pattern: Span<UInt8>, text: Span<UInt8>, caseSensitive: Bool) -> (first: Int, last: Int)? {
-        guard pattern.count <= text.count else { return nil }
+    static func asciiFuzzyIndex(
+        pattern: Span<UInt8>, text: Span<UInt8>,
+        caseSensitive: Bool,
+        F: UnsafeMutablePointer<Int32>
+    ) -> (minIdx: Int, maxIdx: Int)? {
+        let M = pattern.count, N = text.count
+        guard M <= N else { return nil }
 
-        var textIndex = 0
-        var firstMatchIdx = 0   // byte index in text where pattern[0] matched
-        var lastMatchIdx  = 0   // byte index in text where pattern[last] matched
-
-        for i in 0..<pattern.count {
-            let patternByte = caseSensitive ? pattern[i] : toLower(pattern[i])
-
-            while textIndex < text.count {
-                let textByte = caseSensitive ? text[textIndex] : toLower(text[textIndex])
-                if patternByte == textByte {
-                    break
-                }
-                textIndex += 1
+        var idx = 0, lastIdx = 0
+        for pidx in 0..<M {
+            let pb = caseSensitive ? pattern[pidx] : toLower(pattern[pidx])
+            while idx < N {
+                if (caseSensitive ? text[idx] : toLower(text[idx])) == pb { break }
+                idx += 1
             }
-
-            if textIndex >= text.count {
-                return nil   // character not found — reject immediately
-            }
-
-            if i == 0 {
-                firstMatchIdx = textIndex
-            }
-            lastMatchIdx = textIndex
-            textIndex += 1
+            if idx >= N { return nil }
+            F[pidx] = Int32(idx)
+            lastIdx = idx
+            idx += 1
         }
 
-        // Step back by 1 so the DP can compute the bonus for the first matched
-        // character using its predecessor's character class.
-        let scopeFirst = firstMatchIdx > 0 ? firstMatchIdx - 1 : 0
+        let minIdx = (Int(F[0]) > 0) ? Int(F[0]) - 1 : 0
 
-        // Backward scan: find the rightmost occurrence of the last pattern byte.
-        // The optimal alignment may end anywhere up to that position.
-        let lastPatByte = caseSensitive ? pattern[pattern.count - 1] : toLower(pattern[pattern.count - 1])
-        var scopeLast = lastMatchIdx   // fallback: the forward-scan position
-        if !caseSensitive {
-            let upper = lastPatByte >= 0x61 && lastPatByte <= 0x7A ? lastPatByte - 0x20 : lastPatByte
-            var idx = text.count - 1
-            while idx > lastMatchIdx {
-                let b = text[idx]
-                if b == lastPatByte || b == upper {
-                    scopeLast = idx
-                    break
-                }
-                idx -= 1
-            }
-        } else {
-            var idx = text.count - 1
-            while idx > lastMatchIdx {
-                if text[idx] == lastPatByte {
-                    scopeLast = idx
-                    break
-                }
-                idx -= 1
-            }
-        }
-
-        return (first: scopeFirst, last: scopeLast)
-    }
-
-    /// Main matching function using UTF-8 byte-level operations
-    public static func match(pattern: String, text: String, caseSensitive: Bool = false) -> MatchResult? {
-        guard !pattern.isEmpty else {
-            return MatchResult(score: 0, positions: [])
-        }
-
-        // Use utf8.span for zero-copy access
-        let patternSpan = pattern.utf8.span
-        let textSpan = text.utf8.span
-
-        // Forward + backward scan: reject early if no in-order match exists,
-        // and compute the narrowest window [scopeFirst … scopeLast] that must
-        // contain any optimal alignment.
-        guard let scope = scopeIndices(pattern: patternSpan, text: textSpan, caseSensitive: caseSensitive) else {
-            return nil
-        }
-        let scopeFirst = scope.first   // inclusive; DP j starts at scopeFirst + 1
-        let scopeLast  = scope.last    // inclusive; DP j ends at scopeLast + 1
-
-        let patternLen = patternSpan.count
-        let textLen = textSpan.count
-
-        // Use buffer reuse for better performance in parallel contexts
-        let buffer = matrixBuffer ?? MatrixBuffer()
-        buffer.resize(patternLen: patternLen, textLen: textLen)
-        buffer.clear(patternLen: patternLen, textLen: textLen)
-
-        // Pre-compute charClasses, lowered text bytes, and per-position bonus
-        // into pooled buffers.  Position 0 uses initialCharClass = delimiter
-        // (path scheme), matching fzf's behaviour for file-path inputs.
-        buffer.resizeTextBuffers(count: textLen)
-        for i in 0..<textLen {
-            let raw = textSpan[i]
-            buffer.charClasses[i] = classify(raw)
-            buffer.loweredText[i] = caseSensitive ? raw : toLower(raw)
-        }
-        // Fill bonus cache: B[i] = bonus for matching at text position i.
-        // Position 0: previous class is implicitly .delimiter (path scheme →
-        // bonusBoundaryDelimiter = 9), mirroring fzf's initialCharClass = charDelimiter.
-        buffer.bonusCache[0] = Self.bonusTable[CharClass.delimiter.index * 6 + buffer.charClasses[0].index]
-        for i in 1..<textLen {
-            buffer.bonusCache[i] = Self.bonusTable[buffer.charClasses[i - 1].index * 6 + buffer.charClasses[i].index]
-        }
-
-        let stride = buffer.stride
-
-        // Initialize row 0: empty pattern matches with score 0.
-        let row0End = scopeLast + 1
-        for j in 0...row0End {
-            buffer.H[j] = 0
-            buffer.lastMatch[j] = -1
-            buffer.C[j] = 0
-        }
-
-        // Pre-lower the pattern bytes once (outside all loops).
-        let patternLowered: [UInt8]
+        // backward: rightmost occurrence of last pattern byte
+        let lastPb = caseSensitive ? pattern[M-1] : toLower(pattern[M-1])
+        var scopeLast = lastIdx
         if caseSensitive {
-            patternLowered = []
+            var i = N - 1
+            while i > lastIdx { if text[i] == lastPb { scopeLast = i; break }; i -= 1 }
         } else {
-            patternLowered = (0..<patternLen).map { toLower(patternSpan[$0]) }
-        }
-
-        // Fill DP table.  Mirrors fzf FuzzyMatchV2 Phase 3 closely:
-        //   H[i][j]  – best score matching pattern[0..<i] against text[0..<j]
-        //   C[i][j]  – consecutive-match run length ending at (i, j)
-        //   inGap    – per-row flag distinguishing gapStart from gapExtension
-        //
-        // Key fzf behaviours reproduced here:
-        //   • bonusFirstCharMultiplier = 2 on the first pattern row (i == 1)
-        //   • consecutive chunk bonus = max(B[j], firstBonus, bonusConsecutive)
-        //     where firstBonus is B at the start of the current consecutive run
-        //   • gap penalty: scoreGapStart on first gap cell, scoreGapExtension after
-        //   • scores floor at 0 (a match is never worse than "no match")
-        let jStart = max(1, scopeFirst + 1)
-        let jEnd   = scopeLast + 1
-        for i in 1...patternLen {
-            let patternByte = caseSensitive ? patternSpan[i - 1] : patternLowered[i - 1]
-            let rowBase     = i * stride
-            let prevRowBase = (i - 1) * stride
-            var inGap = false
-
-            for j in jStart...jEnd {
-                let textByte = buffer.loweredText[j - 1]
-
-                // s1 = score if we match pattern[i-1] at text position j-1
-                // s2 = score if we skip text position j-1 (gap)
-                var s1 = Int.min / 2
-                var consecutive = 0
-
-                if patternByte == textByte {
-                    let b = buffer.bonusCache[j - 1]   // positional bonus for text[j-1]
-                    s1 = buffer.H[prevRowBase + j - 1] + scoreMatch
-
-                    consecutive = buffer.C[prevRowBase + j - 1] + 1
-                    if consecutive > 1 {
-                        // Propagate the bonus from the start of this consecutive
-                        // chunk (fb), mirroring fzf's chunk-bonus logic.
-                        let fb = buffer.bonusCache[j - 1 - consecutive + 1]
-                        if b >= bonusBoundary && b > fb {
-                            // Current position starts a better boundary run;
-                            // reset consecutive to 1.
-                            consecutive = 1
-                            s1 += (i == 1) ? b * bonusFirstCharMultiplier : b
-                        } else {
-                            let chunkBonus = max(b, fb, bonusConsecutive)
-                            s1 += (i == 1) ? chunkBonus * bonusFirstCharMultiplier : chunkBonus
-                        }
-                    } else {
-                        // Start of a new consecutive chunk (or isolated match)
-                        s1 += (i == 1) ? b * bonusFirstCharMultiplier : b
-                    }
-                }
-
-                let s2: Int
-                if inGap {
-                    s2 = buffer.H[rowBase + j - 1] + scoreGapExtension
-                } else {
-                    s2 = buffer.H[rowBase + j - 1] + scoreGapStart
-                }
-
-                if s1 >= s2 {
-                    // Match wins (or tie — prefer match for backtracking)
-                    buffer.H[rowBase + j] = max(s1, 0)
-                    buffer.C[rowBase + j] = consecutive
-                    buffer.lastMatch[rowBase + j] = j - 1
-                    inGap = false
-                } else {
-                    // Gap wins
-                    buffer.H[rowBase + j] = max(s2, 0)
-                    buffer.C[rowBase + j] = 0
-                    buffer.lastMatch[rowBase + j] = buffer.lastMatch[rowBase + j - 1]
-                    inGap = true
-                }
+            let upper: UInt8 = (lastPb >= 0x61 && lastPb <= 0x7A) ? lastPb - 0x20 : lastPb
+            var i = N - 1
+            while i > lastIdx {
+                let b = text[i]
+                if b == lastPb || b == upper { scopeLast = i; break }
+                i -= 1
             }
         }
-
-        // Find best score in last row (clamped to scope window)
-        let lastRowBase = patternLen * stride
-        var bestScore = Int.min
-        var bestCol = -1
-        for j in max(patternLen, jStart)...jEnd {
-            if buffer.H[lastRowBase + j] > bestScore {
-                bestScore = buffer.H[lastRowBase + j]
-                bestCol = j
-            }
-        }
-
-        guard bestScore > Int.min / 2 else {
-            return nil
-        }
-
-        // Backtrack to find match positions
-        let positions = backtrack(H: buffer.H, lastMatch: buffer.lastMatch, stride: stride, patternLen: patternLen, endCol: bestCol)
-
-        return MatchResult(score: bestScore, positions: positions)
+        return (minIdx: minIdx, maxIdx: scopeLast + 1)
     }
 
-    private static func backtrack(H: [Int], lastMatch: [Int], stride: Int, patternLen: Int, endCol: Int) -> [Int] {
-        // Pre-allocate exact size and fill in reverse to avoid append + reversed
-        var positions = [Int](repeating: 0, count: patternLen)
-        var writeIdx = patternLen - 1
-        var col = endCol
-        var row = patternLen
+    // ─── Main entry ────────────────────────────────────────────────────────
+    public static func match(pattern: String, text: String, caseSensitive: Bool = false) -> MatchResult? {
+        guard !pattern.isEmpty else { return MatchResult(score: 0, positions: []) }
 
-        while row > 0 && col > 0 {
-            let matchPos = lastMatch[row * stride + col]
-            if matchPos >= 0 && matchPos < col {
-                positions[writeIdx] = matchPos
-                writeIdx -= 1
-                row -= 1
-                col = matchPos
-            } else {
-                col -= 1
+        let patSpan = pattern.utf8.span
+        let txtSpan = text.utf8.span
+        let M = patSpan.count, N = txtSpan.count
+        guard M <= N else { return nil }
+
+        let buf = matrixBuffer ?? MatrixBuffer()
+        buf.ensureI32(M + N)
+
+        // ── Phase 1 ──────────────────────────────────────────────────────
+        guard let scope = asciiFuzzyIndex(
+            pattern: patSpan, text: txtSpan,
+            caseSensitive: caseSensitive,
+            F: buf.I32.withUnsafeMutableBufferPointer { $0.baseAddress! }
+        ) else { return nil }
+
+        let minIdx = scope.minIdx
+        let W      = scope.maxIdx - minIdx
+
+        buf.ensureI16(3 * W + 2 * W * M)
+
+        let offH0 = 0,  offC0 = W,  offB = 2 * W
+        let offH  = 3 * W,          offC = 3 * W + W * M
+        let offT  = M   // in I32
+
+        // ── Phase 2 ──────────────────────────────────────────────────────
+        var maxScore:    Int16 = 0
+        var maxScorePos: Int   = 0
+
+        buf.I16.withUnsafeMutableBufferPointer { i16buf in
+            buf.I32.withUnsafeMutableBufferPointer { i32buf in
+                let i16 = i16buf.baseAddress!
+                let i32 = i32buf.baseAddress!
+
+                let H0  = i16 + offH0
+                let C0  = i16 + offC0
+                let B   = i16 + offB
+                let T   = i32 + offT
+
+                Self.classLUT.withUnsafeBufferPointer { lutBuf in
+                    let lut = lutBuf.baseAddress!
+                    Self.bonusTable.withUnsafeBufferPointer { btBuf in
+                        let bt = btBuf.baseAddress!
+                        patSpan.withUnsafeBufferPointer { patRaw in
+                            txtSpan.withUnsafeBufferPointer { txtRaw in
+                                let pat = patRaw.baseAddress!
+                                let txt = txtRaw.baseAddress!
+
+                                let pchar0: UInt8 = caseSensitive ? pat[0] : toLower(pat[0])
+                                var prevH0: Int16 = 0
+                                var prevCls: Int  = 1   // delimiter (path scheme initialCharClass)
+                                var inGap = false
+
+                                for off in 0..<W {
+                                    let raw = txt[minIdx + off]
+                                    let cls = Int(raw < 128 ? lut[Int(raw)] : 4)
+                                    let ch: UInt8 = (!caseSensitive && cls == 3) ? (raw | 0x20) : raw
+                                    T[off] = Int32(ch)
+
+                                    let bonus = bt[prevCls * 6 + cls]
+                                    B[off]    = bonus
+                                    prevCls   = cls
+
+                                    if ch == pchar0 {
+                                        let score = scoreMatch + bonus * bonusFirstCharMultiplier
+                                        H0[off]  = score
+                                        C0[off]  = 1
+                                        if M == 1 && score > maxScore {
+                                            maxScore    = score
+                                            maxScorePos = off
+                                        }
+                                        inGap = false
+                                    } else {
+                                        H0[off] = max(prevH0 + (inGap ? scoreGapExtension : scoreGapStart), 0)
+                                        C0[off] = 0
+                                        inGap   = true
+                                    }
+                                    prevH0 = H0[off]
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // If we didn't fill all slots (shouldn't happen for a valid match path),
-        // return only the filled portion.  Normally writeIdx == -1 at this point.
-        if writeIdx >= 0 {
-            return Array(positions[(writeIdx + 1)...])
+        // Single-char fast path
+        if M == 1 {
+            return MatchResult(score: Int(maxScore), positions: [minIdx + maxScorePos])
         }
-        return positions
+
+        // ── Phase 3: DP fill ─────────────────────────────────────────────
+        let f0    = Int(buf.I32[0])
+        let f0rel = f0 - minIdx
+
+        buf.I16.withUnsafeMutableBufferPointer { i16buf in
+            buf.I32.withUnsafeBufferPointer  { i32buf in
+                let i16 = i16buf.baseAddress!
+                let i32 = i32buf.baseAddress!
+                let H   = i16 + offH
+                let C   = i16 + offC
+                let H0p = i16 + offH0
+                let C0p = i16 + offC0
+                let B   = i16 + offB
+                let T   = i32 + offT
+                let Fp  = i32              // F[0…M−1]
+
+                // Row 0 ← H0 / C0
+                for j in f0rel..<W {
+                    H[j] = H0p[j]
+                    C[j] = C0p[j]
+                }
+
+                patSpan.withUnsafeBufferPointer { patRaw in
+                    let pat = patRaw.baseAddress!
+
+                    for pidx in 1..<M {
+                        let fRel = Int(Fp[pidx]) - minIdx
+                        let pch  = caseSensitive ? pat[pidx] : toLower(pat[pidx])
+                        let row  = pidx * W
+                        let prev = (pidx - 1) * W
+
+                        var inGap: Bool = false
+                        var hleft: Int16 = 0
+
+                        for off in fRel..<W {
+                            let s2 = hleft + (inGap ? scoreGapExtension : scoreGapStart)
+
+                            var s1: Int16 = Int16.min / 2
+                            var consecutive: Int16 = 0
+
+                            let ch = UInt8(truncatingIfNeeded: T[off])
+                            if pch == ch {
+                                let hdiag: Int16 = (off > 0) ? H[prev + off - 1] : 0
+                                s1 = hdiag + scoreMatch
+                                var b = B[off]
+                                consecutive = (off > 0) ? C[prev + off - 1] + 1 : 1
+
+                                if consecutive > 1 {
+                                    let fb = B[off - Int(consecutive) + 1]
+                                    if b >= bonusBoundary && b > fb {
+                                        consecutive = 1
+                                    } else {
+                                        b = max(b, max(fb, bonusConsecutive))
+                                    }
+                                }
+                                if s1 + b < s2 {
+                                    s1 += B[off]
+                                    consecutive = 0
+                                } else {
+                                    s1 += b
+                                }
+                            }
+
+                            C[row + off] = consecutive
+                            inGap        = s1 < s2
+                            let score    = max(s1, max(s2, 0))
+                            H[row + off] = score
+                            hleft        = score
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Best score in last row ─────────────────────────────────────
+        let lastRow = (M - 1) * W
+        var bestScore: Int16 = 0
+        var bestCol   = f0rel
+        buf.I16.withUnsafeBufferPointer { i16buf in
+            let H = i16buf.baseAddress! + offH
+            for j in f0rel..<W {
+                if H[lastRow + j] > bestScore {
+                    bestScore = H[lastRow + j]
+                    bestCol   = j
+                }
+            }
+        }
+        guard bestScore > 0 else { return nil }
+
+        // ── Phase 4: backtrack ─────────────────────────────────────────
+        var positions = [Int](repeating: 0, count: M)
+
+        buf.I16.withUnsafeBufferPointer { i16buf in
+            buf.I32.withUnsafeBufferPointer { i32buf in
+                positions.withUnsafeMutableBufferPointer { posBuf in
+                    let H   = i16buf.baseAddress! + offH
+                    let C   = i16buf.baseAddress! + offC
+                    let Fp  = i32buf.baseAddress!
+                    let pos = posBuf.baseAddress!
+
+                    var i = M - 1
+                    var j = bestCol
+                    var preferMatch = true
+
+                    while true {
+                        let row = i * W
+                        let s   = H[row + j]
+
+                        var s1: Int16 = 0
+                        var s2: Int16 = 0
+
+                        let fI = Int(Fp[i]) - minIdx
+                        if i > 0 && j >= fI {
+                            s1 = (j > 0) ? H[(i-1)*W + j - 1] : 0
+                        }
+                        if j > fI {
+                            s2 = H[row + j - 1]
+                        }
+
+                        if s > s1 && (s > s2 || (s == s2 && preferMatch)) {
+                            pos[i] = minIdx + j
+                            if i == 0 { break }
+                            i -= 1
+                        }
+
+                        let curC  = C[row + j]
+                        let nextOff = row + W + j + 1
+                        let nextC: Int16 = (nextOff < M * W) ? C[nextOff] : 0
+                        preferMatch = curC > 1 || nextC > 0
+                        j -= 1
+                    }
+                }
+            }
+        }
+
+        return MatchResult(score: Int(bestScore), positions: positions)
     }
 }
