@@ -28,7 +28,13 @@ struct App: AsyncParsableCommand {
     @Option(name: .long, help: "Preview command (floating window style). Use {} as placeholder.")
     var previewFloat: String?
 
+    @Option(name: .long, help: "Ranking scheme: default (score, length), path (score, pathname, length), history (score only). Mirrors fzf --scheme.")
+    var scheme: String = "path"
+
     mutating func run() async throws {
+        guard let sortScheme = SortScheme.parse(scheme) else {
+            throw ValidationError("invalid --scheme '\(scheme)' (expected: default, path, history)")
+        }
         let runner = Runner(
             options: Options(
                 height: height,
@@ -36,6 +42,7 @@ struct App: AsyncParsableCommand {
                 caseSensitive: caseSensitive,
                 preview: preview,
                 previewFloat: previewFloat,
+                scheme: sortScheme,
             )
         )
         try await runner.run()

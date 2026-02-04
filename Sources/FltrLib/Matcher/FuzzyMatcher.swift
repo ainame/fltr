@@ -1,11 +1,35 @@
 import Foundation
 
+/// Ranking scheme — mirrors fzf's `--scheme` option.
+/// Controls which tiebreakers are active after byScore.
+///   default  → [byScore, byLength]
+///   path     → [byScore, byPathname, byLength]
+///   history  → [byScore]          (no tiebreakers)
+public enum SortScheme: Sendable {
+    case `default`   // byScore, byLength
+    case path        // byScore, byPathname, byLength
+    case history     // byScore only
+
+    /// Parse a user-supplied string, case-insensitive.  Returns nil on
+    /// unrecognised input so the caller can emit a usage error.
+    public static func parse(_ s: String) -> SortScheme? {
+        switch s.lowercased() {
+        case "default": return .default
+        case "path":    return .path
+        case "history": return .history
+        default:        return nil
+        }
+    }
+}
+
 /// Main fuzzy matching interface
 struct FuzzyMatcher: Sendable {
     let caseSensitive: Bool
+    let scheme: SortScheme
 
-    init(caseSensitive: Bool = false) {
+    init(caseSensitive: Bool = false, scheme: SortScheme = .path) {
         self.caseSensitive = caseSensitive
+        self.scheme = scheme
     }
 
     /// Match a pattern against text
@@ -66,13 +90,13 @@ struct FuzzyMatcher: Sendable {
 
         guard !trimmedPattern.isEmpty else {
             // Empty pattern matches everything with score 0
-            return items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: [])) }
+            return items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: []), scheme: scheme) }
         }
 
         var matched: [MatchedItem] = []
         for item in items {
             if let result = match(pattern: trimmedPattern, text: item.text) {
-                matched.append(MatchedItem(item: item, matchResult: result))
+                matched.append(MatchedItem(item: item, matchResult: result, scheme: scheme))
             }
         }
 
@@ -83,13 +107,11 @@ struct FuzzyMatcher: Sendable {
 
 /// Item with match result and precomputed ranking points.
 ///
-/// Ranking mirrors fzf's "path" scheme: `[byScore, byPathname, byLength]`.
-/// Points are packed into four UInt16 slots stored lower-is-better; the
+/// Points are packed into four UInt16 slots (lower-is-better); the
 /// comparison walks from index 3 (highest priority) down to 0.
-///   points[3] = byScore      (MaxUInt16 − score)
-///   points[2] = byPathname   (distance from match-start to last path separator;
-///                              MaxUInt16 when match crosses the separator)
-///   points[1] = byLength     (trimmed item length)
+///   points[3] = byScore      (MaxUInt16 − score)                   always active
+///   points[2] = byPathname   (segment-local distance)              path scheme only; 0 otherwise
+///   points[1] = byLength     (UTF-8 byte length)                   default & path; 0 for history
 ///   points[0] = unused (0)
 struct MatchedItem: Sendable {
     let item: Item
@@ -97,10 +119,10 @@ struct MatchedItem: Sendable {
     /// Precomputed rank key.  Compare with `rankLessThan(_:_:)`.
     let points: (UInt16, UInt16, UInt16, UInt16)   // [0] … [3]
 
-    init(item: Item, matchResult: MatchResult) {
+    init(item: Item, matchResult: MatchResult, scheme: SortScheme = .path) {
         self.item = item
         self.matchResult = matchResult
-        self.points = MatchedItem.buildPoints(text: item.text, matchResult: matchResult)
+        self.points = MatchedItem.buildPoints(text: item.text, matchResult: matchResult, scheme: scheme)
     }
 
     var score: Int {
@@ -109,13 +131,13 @@ struct MatchedItem: Sendable {
 
     // MARK: - Rank-point construction  (mirrors fzf result.go : buildResult)
 
-    private static func buildPoints(text: String, matchResult: MatchResult) -> (UInt16, UInt16, UInt16, UInt16) {
+    private static func buildPoints(text: String, matchResult: MatchResult, scheme: SortScheme) -> (UInt16, UInt16, UInt16, UInt16) {
         let maxU16 = Int(UInt16.max)
 
-        // --- byScore (points[3]) ---  higher score → lower value
+        // --- byScore (points[3]) ---  higher score → lower value  (always active)
         let byScore = UInt16(clamping: maxU16 - matchResult.score)
 
-        // --- byPathname (points[2]) ---
+        // --- byPathname (points[2]) ---  path scheme only
         // Find the last path separator at or before the match start.
         // This measures how far into its own path segment the match begins —
         // a match right after a '/' (distance 1) ranks above one mid-segment.
@@ -123,23 +145,33 @@ struct MatchedItem: Sendable {
         // separator in the whole string) keeps directory-children like
         // "../renovate/lib" on equal footing with "../renovate-wrapper" when
         // both match "renovate" right after a '/'.
-        let minBegin = matchResult.positions.first ?? 0
-        var delimBeforeMatch = -1
-        var idx = 0
-        for ch in text.utf8 {
-            if idx >= minBegin { break }
-            if ch == 0x2F || ch == 0x5C {   // '/' or '\'
-                delimBeforeMatch = idx
+        let byPathname: UInt16
+        if case .path = scheme {
+            let minBegin = matchResult.positions.first ?? 0
+            var delimBeforeMatch = -1
+            var idx = 0
+            for ch in text.utf8 {
+                if idx >= minBegin { break }
+                if ch == 0x2F || ch == 0x5C {   // '/' or '\'
+                    delimBeforeMatch = idx
+                }
+                idx += 1
             }
-            idx += 1
+            byPathname = UInt16(clamping: minBegin - delimBeforeMatch)
+        } else {
+            byPathname = 0
         }
-        let byPathname = UInt16(clamping: minBegin - delimBeforeMatch)
 
-        // --- byLength (points[1]) ---  shorter items rank higher
+        // --- byLength (points[1]) ---  default & path schemes only
         // fzf uses TrimLength (trailing whitespace stripped).  We approximate
         // with the full UTF-8 byte length; trimming whitespace here would cost
         // an allocation on every item.
-        let byLength = UInt16(clamping: text.utf8.count)
+        let byLength: UInt16
+        if case .history = scheme {
+            byLength = 0
+        } else {
+            byLength = UInt16(clamping: text.utf8.count)
+        }
 
         return (0, byLength, byPathname, byScore)
     }

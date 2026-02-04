@@ -6,13 +6,15 @@ public struct Options {
     public let caseSensitive: Bool
     public let preview: String?
     public let previewFloat: String?
+    public let scheme: SortScheme
 
-    public init(height: Int?, multi: Bool, caseSensitive: Bool, preview: String?, previewFloat: String?) {
+    public init(height: Int?, multi: Bool, caseSensitive: Bool, preview: String?, previewFloat: String?, scheme: SortScheme = .path) {
         self.height = height
         self.multi = multi
         self.caseSensitive = caseSensitive
         self.preview = preview
         self.previewFloat = previewFloat
+        self.scheme = scheme
     }
 }
 
@@ -40,7 +42,7 @@ public struct Runner {
 
         // Initialize UI components
         let terminal = RawTerminal()
-        let matcher = FuzzyMatcher(caseSensitive: options.caseSensitive)
+        let matcher = FuzzyMatcher(caseSensitive: options.caseSensitive, scheme: options.scheme)
         let ui = UIController(
             terminal: terminal,
             matcher: matcher,

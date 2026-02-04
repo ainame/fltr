@@ -18,7 +18,7 @@ struct MatchingEngine: Sendable {
     func matchItemsParallel(pattern: String, items: [Item]) async -> [MatchedItem] {
         // Empty pattern - return all items quickly
         guard !pattern.isEmpty else {
-            return items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: [])) }
+            return items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: []), scheme: matcher.scheme) }
         }
 
         // NOTE: fzf always uses fuzzy matching - no substring fast path
@@ -53,6 +53,7 @@ struct MatchingEngine: Sendable {
                     // Each task gets its own matrix buffer for reuse
                     return Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
                         var matched: [MatchedItem] = []
+                        let scheme = self.matcher.scheme
                         for item in partition {
                             // Yield cooperatively every 100 items to allow cancellation
                             if matched.count % 100 == 0 {
@@ -60,7 +61,7 @@ struct MatchingEngine: Sendable {
                             }
 
                             if let result = self.matcher.match(pattern: pattern, text: item.text) {
-                                matched.append(MatchedItem(item: item, matchResult: result))
+                                matched.append(MatchedItem(item: item, matchResult: result, scheme: scheme))
                             }
                         }
                         return matched
@@ -109,6 +110,7 @@ struct MatchingEngine: Sendable {
                     guard !Task.isCancelled else { return [] }
 
                     var matched: [MatchedItem] = []
+                    let scheme = self.matcher.scheme
                     for item in partition {
                         // Fast case-insensitive substring check
                         if item.text.lowercased().contains(lowercasePattern) {
@@ -119,7 +121,8 @@ struct MatchingEngine: Sendable {
                             let positions = Array(position..<(position + pattern.count))
                             matched.append(MatchedItem(
                                 item: item,
-                                matchResult: MatchResult(score: score, positions: positions)
+                                matchResult: MatchResult(score: score, positions: positions),
+                                scheme: scheme
                             ))
                         }
 
@@ -164,10 +167,11 @@ struct MatchingEngine: Sendable {
         guard !pattern.isEmpty else {
             var all: [MatchedItem] = []
             all.reserveCapacity(chunkList.count)
+            let scheme = matcher.scheme
             for ci in 0..<chunkList.chunkCount {
                 let chunk = chunkList.chunk(at: ci)
                 for i in 0..<chunk.count {
-                    all.append(MatchedItem(item: chunk[i], matchResult: MatchResult(score: 0, positions: [])))
+                    all.append(MatchedItem(item: chunk[i], matchResult: MatchResult(score: 0, positions: []), scheme: scheme))
                 }
             }
             return all
@@ -191,6 +195,7 @@ struct MatchingEngine: Sendable {
 
                     return Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
                         var partitionMatches: [MatchedItem] = []
+                        let scheme = self.matcher.scheme
 
                         for ci in partitionStart..<partitionEnd {
                             guard !Task.isCancelled else { return [] }
@@ -211,7 +216,7 @@ struct MatchingEngine: Sendable {
                             if let candidates = candidates {
                                 for candidate in candidates {
                                     if let result = self.matcher.match(pattern: pattern, text: candidate.item.text) {
-                                        chunkResults.append(MatchedItem(item: candidate.item, matchResult: result))
+                                        chunkResults.append(MatchedItem(item: candidate.item, matchResult: result, scheme: scheme))
                                     }
                                 }
                             } else {
@@ -219,7 +224,7 @@ struct MatchingEngine: Sendable {
                                 for i in 0..<chunk.count {
                                     let item = chunk[i]
                                     if let result = self.matcher.match(pattern: pattern, text: item.text) {
-                                        chunkResults.append(MatchedItem(item: item, matchResult: result))
+                                        chunkResults.append(MatchedItem(item: item, matchResult: result, scheme: scheme))
                                     }
                                 }
                             }
