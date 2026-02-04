@@ -13,18 +13,27 @@ struct MatchingEngine: Sendable {
 
     /// Match items in parallel using TaskGroup.
     /// Each partition is sorted locally; the caller merges lazily via ResultMerger.
+    ///
+    /// *items* is a flat ``[Item]`` — used on the incremental-filter path where the
+    /// candidate set was extracted from a previous merger.  All Items share the same
+    /// ``TextBuffer``, so each task opens it independently via ``withBytes``.
     func matchItemsParallel(pattern: String, items: [Item]) async -> ResultMerger {
         guard !pattern.isEmpty else {
-            // Single partition, already in insertion order (= rank order for score-0 items)
-            let all = items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: []), scheme: matcher.scheme) }
+            // For the flat-item path we cannot avoid wrapping because the caller
+            // expects a partition-backed merger it can re-score later.  But this
+            // path only fires on incremental filter (previous results ≪ total),
+            // so the allocation is small.
+            let all = items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: [])) }
             return ResultMerger(partitions: [all])
         }
 
         // Small dataset - use single-threaded with buffer reuse
         if items.count < parallelThreshold {
-            // matchItems already sorts by rankLessThan
-            let results = Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
-                matcher.matchItems(pattern: pattern, items: items)
+            guard let buf = items.first?.buffer else { return .empty }
+            let results = buf.withBytes { allBytes in
+                Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
+                    matchItemsFromBuffer(pattern: pattern, items: items, allBytes: allBytes)
+                }
             }
             return ResultMerger(partitions: [results])
         }
@@ -32,73 +41,18 @@ struct MatchingEngine: Sendable {
         // Parallel matching for large datasets
         let cpuCount = ProcessInfo.processInfo.activeProcessorCount
         let partitionSize = max(100, items.count / cpuCount)
+        guard let buf = items.first?.buffer else { return .empty }
 
         return await withTaskGroup(of: [MatchedItem].self) { group in
             for partition in items.chunked(into: partitionSize) {
                 group.addTask {
                     guard !Task.isCancelled else { return [] }
 
-                    return Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
-                        var matched: [MatchedItem] = []
-                        let scheme = self.matcher.scheme
-                        for item in partition {
-                            if matched.count % 100 == 0 {
-                                guard !Task.isCancelled else { return [] }
-                            }
-                            if let result = self.matcher.match(pattern: pattern, text: item.text) {
-                                matched.append(MatchedItem(item: item, matchResult: result, scheme: scheme))
-                            }
-                        }
-                        // Sort this partition locally — the Merger does the global interleave
-                        matched.sort(by: rankLessThan)
-                        return matched
-                    }
-                }
-            }
-
-            var partitions = [[MatchedItem]]()
-            for await partitionResults in group {
-                guard !Task.isCancelled else { break }
-                if !partitionResults.isEmpty {
-                    partitions.append(partitionResults)
-                }
-            }
-            return ResultMerger(partitions: partitions)
-        }
-    }
-
-    /// Fast exact substring matching for short patterns (fzf optimization)
-    /// Much faster than fuzzy matching for 1-2 character patterns
-    private func exactSubstringMatch(pattern: String, items: [Item]) async -> ResultMerger {
-        let lowercasePattern = pattern.lowercased()
-
-        let cpuCount = ProcessInfo.processInfo.activeProcessorCount
-        let partitionSize = max(1000, items.count / cpuCount)
-
-        return await withTaskGroup(of: [MatchedItem].self) { group in
-            for partition in items.chunked(into: partitionSize) {
-                group.addTask {
-                    guard !Task.isCancelled else { return [] }
-
-                    var matched: [MatchedItem] = []
-                    let scheme = self.matcher.scheme
-                    for item in partition {
-                        if item.text.lowercased().contains(lowercasePattern) {
-                            let position = item.text.lowercased().range(of: lowercasePattern)?.lowerBound.utf16Offset(in: item.text) ?? 0
-                            let score = 1000 - position - item.text.count / 10
-                            let positions = Array(position..<(position + pattern.count))
-                            matched.append(MatchedItem(
-                                item: item,
-                                matchResult: MatchResult(score: score, positions: positions),
-                                scheme: scheme
-                            ))
-                        }
-                        if matched.count % 100 == 0 {
-                            guard !Task.isCancelled else { return [] }
+                    return buf.withBytes { allBytes in
+                        Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
+                            self.matchItemsFromBuffer(pattern: pattern, items: partition, allBytes: allBytes)
                         }
                     }
-                    matched.sort(by: rankLessThan)
-                    return matched
                 }
             }
 
@@ -122,25 +76,19 @@ struct MatchingEngine: Sendable {
     ///   3. Full miss        → match every item in the chunk.
     ///   4. Store result if selectivity gate passes (count ≤ queryCacheMax).
     ///
-    /// Parallelisation and topN / cancellation logic mirrors
-    /// ``matchItemsParallel``.
+    /// Parallelisation and cancellation logic mirrors ``matchItemsParallel``.
     func matchChunksParallel(pattern: String, chunkList: ChunkList, cache: ChunkCache) async -> ResultMerger {
         guard !pattern.isEmpty else {
-            var all: [MatchedItem] = []
-            all.reserveCapacity(chunkList.count)
-            let scheme = matcher.scheme
-            for ci in 0..<chunkList.chunkCount {
-                let chunk = chunkList.chunk(at: ci)
-                for i in 0..<chunk.count {
-                    all.append(MatchedItem(item: chunk[i], matchResult: MatchResult(score: 0, positions: []), scheme: scheme))
-                }
-            }
-            // Single partition, already in insertion order (= rank order for score-0 items)
-            return ResultMerger(partitions: [all])
+            // Zero-allocation fast path: ChunkList in insertion order IS rank order.
+            return .fromChunkList(chunkList)
         }
 
         let totalChunks = chunkList.chunkCount
         guard totalChunks > 0 else { return .empty }
+
+        // All items share the same TextBuffer — grab it from the first chunk.
+        guard chunkList.chunk(at: 0).count > 0 else { return .empty }
+        let buffer = chunkList.chunk(at: 0)[0].buffer
 
         let cpuCount = ProcessInfo.processInfo.activeProcessorCount
         let chunksPerPartition = max(1, totalChunks / cpuCount)
@@ -155,50 +103,60 @@ struct MatchingEngine: Sendable {
                 group.addTask {
                     guard !Task.isCancelled else { return [] }
 
-                    return Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
-                        var partitionMatches: [MatchedItem] = []
-                        let scheme = self.matcher.scheme
+                    return buffer.withBytes { allBytes in
+                        Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
+                            var partitionMatches: [MatchedItem] = []
 
-                        for ci in partitionStart..<partitionEnd {
-                            guard !Task.isCancelled else { return [] }
+                            for ci in partitionStart..<partitionEnd {
+                                guard !Task.isCancelled else { return [] }
 
-                            let chunk = chunkList.chunk(at: ci)
+                                let chunk = chunkList.chunk(at: ci)
 
-                            // 1. Exact cache hit — zero matching work
-                            if let cached = cache.lookup(chunkIndex: ci, chunkCount: chunk.count, query: pattern) {
-                                partitionMatches.append(contentsOf: cached)
-                                continue
-                            }
+                                // 1. Exact cache hit — zero matching work
+                                if let cached = cache.lookup(chunkIndex: ci, chunkCount: chunk.count, query: pattern) {
+                                    partitionMatches.append(contentsOf: cached)
+                                    continue
+                                }
 
-                            // 2. Search hit — narrow the candidate set
-                            let candidates = cache.search(chunkIndex: ci, chunkCount: chunk.count, query: pattern)
+                                // 2. Search hit — narrow the candidate set
+                                let candidates = cache.search(chunkIndex: ci, chunkCount: chunk.count, query: pattern)
 
-                            var chunkResults: [MatchedItem] = []
+                                var chunkResults: [MatchedItem] = []
 
-                            if let candidates = candidates {
-                                for candidate in candidates {
-                                    if let result = self.matcher.match(pattern: pattern, text: candidate.item.text) {
-                                        chunkResults.append(MatchedItem(item: candidate.item, matchResult: result, scheme: scheme))
+                                if let candidates = candidates {
+                                    for candidate in candidates {
+                                        let item = candidate.item
+                                        let slice = UnsafeBufferPointer(
+                                            start: allBytes.baseAddress! + Int(item.offset),
+                                            count: Int(item.length)
+                                        )
+                                        if let result = self.matcher.match(pattern: pattern, textBuf: slice) {
+                                            chunkResults.append(MatchedItem(item: item, matchResult: result))
+                                        }
+                                    }
+                                } else {
+                                    // 3. Full miss — match every item in the chunk
+                                    for i in 0..<chunk.count {
+                                        let item = chunk[i]
+                                        let slice = UnsafeBufferPointer(
+                                            start: allBytes.baseAddress! + Int(item.offset),
+                                            count: Int(item.length)
+                                        )
+                                        if let result = self.matcher.match(pattern: pattern, textBuf: slice) {
+                                            chunkResults.append(MatchedItem(item: item, matchResult: result))
+                                        }
                                     }
                                 }
-                            } else {
-                                // 3. Full miss — match every item in the chunk
-                                for i in 0..<chunk.count {
-                                    let item = chunk[i]
-                                    if let result = self.matcher.match(pattern: pattern, text: item.text) {
-                                        chunkResults.append(MatchedItem(item: item, matchResult: result, scheme: scheme))
-                                    }
-                                }
+
+                                // 4. Store if selectivity gate passes
+                                cache.add(chunkIndex: ci, chunkCount: chunk.count, query: pattern, results: chunkResults)
+
+                                partitionMatches.append(contentsOf: chunkResults)
                             }
-
-                            // 4. Store if selectivity gate passes
-                            cache.add(chunkIndex: ci, chunkCount: chunk.count, query: pattern, results: chunkResults)
-
-                            partitionMatches.append(contentsOf: chunkResults)
+                            // Sort this partition locally — the Merger does the global interleave
+                            partitionMatches.sort(by: rankLessThan)
+                            return partitionMatches
                         }
-                        // Sort this partition locally — the Merger does the global interleave
-                        partitionMatches.sort(by: rankLessThan)
-                        return partitionMatches
                     }
                 }
 
@@ -216,6 +174,27 @@ struct MatchingEngine: Sendable {
         }
     }
 
+    // MARK: - Private helpers
+
+    /// Match a slice of items using a pre-opened buffer pointer.
+    /// Caller must hold the buffer pointer alive for the duration.
+    private func matchItemsFromBuffer(pattern: String, items: [Item], allBytes: UnsafeBufferPointer<UInt8>) -> [MatchedItem] {
+        var matched: [MatchedItem] = []
+        for item in items {
+            if matched.count % 100 == 0 {
+                guard !Task.isCancelled else { return [] }
+            }
+            let slice = UnsafeBufferPointer(
+                start: allBytes.baseAddress! + Int(item.offset),
+                count: Int(item.length)
+            )
+            if let result = matcher.match(pattern: pattern, textBuf: slice) {
+                matched.append(MatchedItem(item: item, matchResult: result))
+            }
+        }
+        matched.sort(by: rankLessThan)
+        return matched
+    }
 }
 
 // Helper extension for chunking arrays

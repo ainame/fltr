@@ -1,6 +1,38 @@
 import Testing
 @testable import FltrLib
 
+// MARK: - Test Helpers
+
+/// Create a single Item backed by its own TextBuffer.
+/// Safe for concurrent use across parallel tests.
+private func makeItem(index: Int, text: String) -> Item {
+    let buffer = TextBuffer()
+    let (offset, length) = buffer.append(text)
+    return Item(index: index, buffer: buffer, offset: offset, length: length)
+}
+
+/// Create an array of Items sharing one TextBuffer (mirrors production layout).
+private func makeItems(_ texts: [String]) -> [Item] {
+    let buffer = TextBuffer()
+    return texts.enumerated().map { (i, text) in
+        let (offset, length) = buffer.append(text)
+        return Item(index: i, buffer: buffer, offset: offset, length: length)
+    }
+}
+
+/// Run FuzzyMatcher.match over every item, collect hits, sort by rank.
+/// Drop-in replacement for the removed matchItems method.
+private func matchItems(matcher: FuzzyMatcher, pattern: String, items: [Item]) -> [MatchedItem] {
+    var results: [MatchedItem] = []
+    for item in items {
+        if let result = matcher.match(pattern: pattern, text: item.text) {
+            results.append(MatchedItem(item: item, matchResult: result))
+        }
+    }
+    results.sort { rankLessThan($0, $1) }
+    return results
+}
+
 // MARK: - Basic Matching Tests
 
 @Test("Basic fuzzy matching")
@@ -86,13 +118,13 @@ func wordBoundaryBonus() {
 func matchItems() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "apple"),
-        Item(index: 1, text: "apricot"),
-        Item(index: 2, text: "banana"),
-        Item(index: 3, text: "cherry"),
+        makeItem(index: 0, text: "apple"),
+        makeItem(index: 1, text: "apricot"),
+        makeItem(index: 2, text: "banana"),
+        makeItem(index: 3, text: "cherry"),
     ]
 
-    let results = matcher.matchItems(pattern: "ap", items: items)
+    let results = matchItems(matcher: matcher, pattern: "ap", items: items)
 
     // Should match "apple" and "apricot"
     #expect(results.count == 2)
@@ -109,12 +141,12 @@ func matchItems() {
 func emptyPatternMatchesAll() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "apple"),
-        Item(index: 1, text: "banana"),
-        Item(index: 2, text: "cherry"),
+        makeItem(index: 0, text: "apple"),
+        makeItem(index: 1, text: "banana"),
+        makeItem(index: 2, text: "cherry"),
     ]
 
-    let results = matcher.matchItems(pattern: "", items: items)
+    let results = matchItems(matcher: matcher, pattern: "", items: items)
     #expect(results.count == 3)
 }
 
@@ -161,13 +193,13 @@ func whitespaceANDMatching() {
 func whitespaceANDOrdering() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "swift-util-tools"),
-        Item(index: 1, text: "swift-argument-parser"),
-        Item(index: 2, text: "util-swift-helper"),
-        Item(index: 3, text: "other-file"),
+        makeItem(index: 0, text: "swift-util-tools"),
+        makeItem(index: 1, text: "swift-argument-parser"),
+        makeItem(index: 2, text: "util-swift-helper"),
+        makeItem(index: 3, text: "other-file"),
     ]
 
-    let results = matcher.matchItems(pattern: "swift util", items: items)
+    let results = matchItems(matcher: matcher, pattern: "swift util", items: items)
 
     // Should match items containing both "swift" and "util"
     #expect(results.count == 2)
@@ -201,8 +233,8 @@ func whitespaceTrimmingAndEmpty() {
     #expect(matcher.match(pattern: "swift  util", text: "swift-util") != nil)
 
     // Only whitespace should match everything (empty pattern)
-    let items = [Item(index: 0, text: "test")]
-    let results = matcher.matchItems(pattern: "   ", items: items)
+    let items = [makeItem(index: 0, text: "test")]
+    let results = matchItems(matcher: matcher, pattern: "   ", items: items)
     #expect(results.count == 1)
 }
 
@@ -212,13 +244,13 @@ func whitespaceTrimmingAndEmpty() {
 func filePathExactMatching() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "README.md"),
-        Item(index: 1, text: "src/lib/readme/parser.md"),
-        Item(index: 2, text: "docs/read_me_first.md"),
-        Item(index: 3, text: "tests/reader_model_demo.md"),
+        makeItem(index: 0, text: "README.md"),
+        makeItem(index: 1, text: "src/lib/readme/parser.md"),
+        makeItem(index: 2, text: "docs/read_me_first.md"),
+        makeItem(index: 3, text: "tests/reader_model_demo.md"),
     ]
 
-    let results = matcher.matchItems(pattern: "README.md", items: items)
+    let results = matchItems(matcher: matcher, pattern: "README.md", items: items)
 
     // Should match multiple items but exact match scores highest
     #expect(results.count >= 1)
@@ -229,15 +261,15 @@ func filePathExactMatching() {
 func filePathLICENSE() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "LICENSE"),
-        Item(index: 1, text: "LICENSE.md"),
-        Item(index: 2, text: "LICENSE.txt"),
-        Item(index: 3, text: "lib/license_checker.rb"),
-        Item(index: 4, text: "src/licensing/models.py"),
-        Item(index: 5, text: "docs/licensing_guide.md"),
+        makeItem(index: 0, text: "LICENSE"),
+        makeItem(index: 1, text: "LICENSE.md"),
+        makeItem(index: 2, text: "LICENSE.txt"),
+        makeItem(index: 3, text: "lib/license_checker.rb"),
+        makeItem(index: 4, text: "src/licensing/models.py"),
+        makeItem(index: 5, text: "docs/licensing_guide.md"),
     ]
 
-    let results = matcher.matchItems(pattern: "LICENSE", items: items)
+    let results = matchItems(matcher: matcher, pattern: "LICENSE", items: items)
 
     // All LICENSE* files should match and rank higher than lib/licensing
     #expect(results.count >= 3)
@@ -251,14 +283,14 @@ func filePathLICENSE() {
 func pathMatchingNested() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "main.swift"),
-        Item(index: 1, text: "src/main.swift"),
-        Item(index: 2, text: "tests/main_test.swift"),
-        Item(index: 3, text: "lib/utils/main_helper.swift"),
-        Item(index: 4, text: "src/domain/user/main.swift"),
+        makeItem(index: 0, text: "main.swift"),
+        makeItem(index: 1, text: "src/main.swift"),
+        makeItem(index: 2, text: "tests/main_test.swift"),
+        makeItem(index: 3, text: "lib/utils/main_helper.swift"),
+        makeItem(index: 4, text: "src/domain/user/main.swift"),
     ]
 
-    let results = matcher.matchItems(pattern: "main.swift", items: items)
+    let results = matchItems(matcher: matcher, pattern: "main.swift", items: items)
 
     // All should match, but files named exactly "main.swift" should rank higher
     #expect(results.count >= 3)
@@ -272,13 +304,13 @@ func pathMatchingNested() {
 func camelCaseMatching() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "UIViewController.swift"),
-        Item(index: 1, text: "UserInterfaceViewController.swift"),
-        Item(index: 2, text: "ui_view_controller.swift"),
-        Item(index: 3, text: "utils/ui/view/controller.swift"),
+        makeItem(index: 0, text: "UIViewController.swift"),
+        makeItem(index: 1, text: "UserInterfaceViewController.swift"),
+        makeItem(index: 2, text: "ui_view_controller.swift"),
+        makeItem(index: 3, text: "utils/ui/view/controller.swift"),
     ]
 
-    let results = matcher.matchItems(pattern: "UIVC", items: items)
+    let results = matchItems(matcher: matcher, pattern: "UIVC", items: items)
 
     // Should match camelCase and snake_case
     #expect(results.count >= 2)
@@ -292,13 +324,13 @@ func camelCaseMatching() {
 func extensionMatching() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "app.js"),
-        Item(index: 1, text: "app.json"),
-        Item(index: 2, text: "app.jsx"),
-        Item(index: 3, text: "application.js"),
+        makeItem(index: 0, text: "app.js"),
+        makeItem(index: 1, text: "app.json"),
+        makeItem(index: 2, text: "app.jsx"),
+        makeItem(index: 3, text: "application.js"),
     ]
 
-    let results = matcher.matchItems(pattern: ".js", items: items)
+    let results = matchItems(matcher: matcher, pattern: ".js", items: items)
 
     // Should match .js and .jsx files
     #expect(results.count >= 2)
@@ -310,12 +342,12 @@ func extensionMatching() {
 func consecutiveMatchBonus() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "test_file.txt"),        // "test" consecutive
-        Item(index: 1, text: "t_e_s_t_file.txt"),     // "test" spread out
-        Item(index: 2, text: "testing_file.txt"),     // "test" consecutive + more
+        makeItem(index: 0, text: "test_file.txt"),        // "test" consecutive
+        makeItem(index: 1, text: "t_e_s_t_file.txt"),     // "test" spread out
+        makeItem(index: 2, text: "testing_file.txt"),     // "test" consecutive + more
     ]
 
-    let results = matcher.matchItems(pattern: "test", items: items)
+    let results = matchItems(matcher: matcher, pattern: "test", items: items)
 
     #expect(results.count == 3)
 
@@ -335,12 +367,12 @@ func consecutiveMatchBonus() {
 func earlyMatchBonus() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "app.js"),
-        Item(index: 1, text: "src/app.js"),
-        Item(index: 2, text: "src/components/admin/app.js"),
+        makeItem(index: 0, text: "app.js"),
+        makeItem(index: 1, text: "src/app.js"),
+        makeItem(index: 2, text: "src/components/admin/app.js"),
     ]
 
-    let results = matcher.matchItems(pattern: "app", items: items)
+    let results = matchItems(matcher: matcher, pattern: "app", items: items)
 
     #expect(results.count == 3)
 
@@ -355,23 +387,23 @@ func earlyMatchBonus() {
 func incrementalFilteringBasic() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "main.swift"),
-        Item(index: 1, text: "main_test.swift"),
-        Item(index: 2, text: "utils.swift"),
-        Item(index: 3, text: "config.json"),
+        makeItem(index: 0, text: "main.swift"),
+        makeItem(index: 1, text: "main_test.swift"),
+        makeItem(index: 2, text: "utils.swift"),
+        makeItem(index: 3, text: "config.json"),
     ]
 
     // First query: "ma"
-    let results1 = matcher.matchItems(pattern: "ma", items: items)
+    let results1 = matchItems(matcher: matcher, pattern: "ma", items: items)
     #expect(results1.count == 2, "'main' files should match 'ma'")
 
     // Extended query: "main"
-    let results2 = matcher.matchItems(pattern: "main", items: items)
+    let results2 = matchItems(matcher: matcher, pattern: "main", items: items)
     #expect(results2.count == 2, "Both 'main' files should match")
     #expect(results2.allSatisfy { $0.item.text.contains("main") })
 
     // Further extension: "main.s"
-    let results3 = matcher.matchItems(pattern: "main.s", items: items)
+    let results3 = matchItems(matcher: matcher, pattern: "main.s", items: items)
     #expect(results3.count >= 1)
     #expect(results3[0].item.text == "main.swift", "Best match should be first")
 
@@ -383,27 +415,27 @@ func incrementalFilteringBasic() {
 @Test("Incremental filtering - query extension maintains subset relationship")
 func incrementalFilteringSubset() {
     let matcher = FuzzyMatcher()
-    let items = (0..<100).map { Item(index: $0, text: "file_\($0).txt") }
+    let items = (0..<100).map { makeItem(index: $0, text: "file_\($0).txt") }
     let specialItems = [
-        Item(index: 100, text: "special.txt"),
-        Item(index: 101, text: "special_case.txt"),
-        Item(index: 102, text: "very_special.txt"),
+        makeItem(index: 100, text: "special.txt"),
+        makeItem(index: 101, text: "special_case.txt"),
+        makeItem(index: 102, text: "very_special.txt"),
     ]
     let allItems = items + specialItems
 
     // Query "sp" - should match "special" items
-    let results1 = matcher.matchItems(pattern: "sp", items: allItems)
+    let results1 = matchItems(matcher: matcher, pattern: "sp", items: allItems)
     let matched1 = Set(results1.map { $0.item.text })
 
     // Extended query "spe" - results should be subset of "sp" results
-    let results2 = matcher.matchItems(pattern: "spe", items: allItems)
+    let results2 = matchItems(matcher: matcher, pattern: "spe", items: allItems)
     let matched2 = Set(results2.map { $0.item.text })
 
     #expect(matched2.isSubset(of: matched1),
             "Extending query should produce subset of results")
 
     // Further extension "spec" - even smaller subset
-    let results3 = matcher.matchItems(pattern: "spec", items: allItems)
+    let results3 = matchItems(matcher: matcher, pattern: "spec", items: allItems)
     let matched3 = Set(results3.map { $0.item.text })
 
     #expect(matched3.isSubset(of: matched2))
@@ -414,24 +446,24 @@ func incrementalFilteringSubset() {
 func incrementalFilteringBackspace() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "test.js"),
-        Item(index: 1, text: "test.ts"),
-        Item(index: 2, text: "test.jsx"),
-        Item(index: 3, text: "test.tsx"),
-        Item(index: 4, text: "test.json"),
+        makeItem(index: 0, text: "test.js"),
+        makeItem(index: 1, text: "test.ts"),
+        makeItem(index: 2, text: "test.jsx"),
+        makeItem(index: 3, text: "test.tsx"),
+        makeItem(index: 4, text: "test.json"),
     ]
 
     // Specific query: "test.ts"
-    let results1 = matcher.matchItems(pattern: "test.ts", items: items)
+    let results1 = matchItems(matcher: matcher, pattern: "test.ts", items: items)
     #expect(results1.count >= 1)
 
     // Backspace to "test.t" - should match more
-    let results2 = matcher.matchItems(pattern: "test.t", items: items)
+    let results2 = matchItems(matcher: matcher, pattern: "test.t", items: items)
     #expect(results2.count >= results1.count,
             "Shorter query should match same or more items")
 
     // Backspace to "test" - should match all test files
-    let results3 = matcher.matchItems(pattern: "test", items: items)
+    let results3 = matchItems(matcher: matcher, pattern: "test", items: items)
     #expect(results3.count == 5, "All test files should match")
 }
 
@@ -439,23 +471,23 @@ func incrementalFilteringBackspace() {
 func incrementalFilteringHelloWorld() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "hello-world"),
-        Item(index: 1, text: "hello"),
-        Item(index: 2, text: "helium"),
-        Item(index: 3, text: "help"),
-        Item(index: 4, text: "hero"),
-        Item(index: 5, text: "halo"),
-        Item(index: 6, text: "world-hello"),
+        makeItem(index: 0, text: "hello-world"),
+        makeItem(index: 1, text: "hello"),
+        makeItem(index: 2, text: "helium"),
+        makeItem(index: 3, text: "help"),
+        makeItem(index: 4, text: "hero"),
+        makeItem(index: 5, text: "halo"),
+        makeItem(index: 6, text: "world-hello"),
     ]
 
-    let q1 = matcher.matchItems(pattern: "h", items: items)
-    let q2 = matcher.matchItems(pattern: "he", items: items)
-    let q3 = matcher.matchItems(pattern: "hel", items: items)
-    let q4 = matcher.matchItems(pattern: "hell", items: items)
-    let q5 = matcher.matchItems(pattern: "hello", items: items)
-    let q6 = matcher.matchItems(pattern: "hello-", items: items)
-    let q7 = matcher.matchItems(pattern: "hello-w", items: items)
-    let q8 = matcher.matchItems(pattern: "hello-world", items: items)
+    let q1 = matchItems(matcher: matcher, pattern: "h", items: items)
+    let q2 = matchItems(matcher: matcher, pattern: "he", items: items)
+    let q3 = matchItems(matcher: matcher, pattern: "hel", items: items)
+    let q4 = matchItems(matcher: matcher, pattern: "hell", items: items)
+    let q5 = matchItems(matcher: matcher, pattern: "hello", items: items)
+    let q6 = matchItems(matcher: matcher, pattern: "hello-", items: items)
+    let q7 = matchItems(matcher: matcher, pattern: "hello-w", items: items)
+    let q8 = matchItems(matcher: matcher, pattern: "hello-world", items: items)
 
     let s1 = Set(q1.map { $0.item.text })
     let s2 = Set(q2.map { $0.item.text })
@@ -483,13 +515,13 @@ func incrementalFilteringHelloWorld() {
 func specialCharactersInPaths() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "my-app/src/index.js"),
-        Item(index: 1, text: "my_app/src/index.js"),
-        Item(index: 2, text: "my.app/src/index.js"),
-        Item(index: 3, text: "my app/src/index.js"),
+        makeItem(index: 0, text: "my-app/src/index.js"),
+        makeItem(index: 1, text: "my_app/src/index.js"),
+        makeItem(index: 2, text: "my.app/src/index.js"),
+        makeItem(index: 3, text: "my app/src/index.js"),
     ]
 
-    let results = matcher.matchItems(pattern: "myapp", items: items)
+    let results = matchItems(matcher: matcher, pattern: "myapp", items: items)
 
     // Should match all variations
     #expect(results.count == 4, "Should match across delimiters")
@@ -499,12 +531,12 @@ func specialCharactersInPaths() {
 func numbersInFilenames() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "v1.2.3/package.json"),
-        Item(index: 1, text: "v2.0.0/package.json"),
-        Item(index: 2, text: "version_1_2_3.txt"),
+        makeItem(index: 0, text: "v1.2.3/package.json"),
+        makeItem(index: 1, text: "v2.0.0/package.json"),
+        makeItem(index: 2, text: "version_1_2_3.txt"),
     ]
 
-    let results = matcher.matchItems(pattern: "v123", items: items)
+    let results = matchItems(matcher: matcher, pattern: "v123", items: items)
 
     #expect(results.count >= 1)
     #expect(results.contains { $0.item.text.contains("v1.2.3") || $0.item.text.contains("1_2_3") })
@@ -515,11 +547,11 @@ func veryLongPaths() {
     let matcher = FuzzyMatcher()
     let longPath = "src/very/deeply/nested/directory/structure/with/many/levels/and/components/that/keeps/going/deeper/and/deeper/until/finally/target.swift"
     let items = [
-        Item(index: 0, text: longPath),
-        Item(index: 1, text: "target.swift"),
+        makeItem(index: 0, text: longPath),
+        makeItem(index: 1, text: "target.swift"),
     ]
 
-    let results = matcher.matchItems(pattern: "target", items: items)
+    let results = matchItems(matcher: matcher, pattern: "target", items: items)
 
     #expect(results.count == 2)
     // Shorter path should rank higher
@@ -530,12 +562,12 @@ func veryLongPaths() {
 func emptyItems() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: ""),
-        Item(index: 1, text: "   "),
-        Item(index: 2, text: "test"),
+        makeItem(index: 0, text: ""),
+        makeItem(index: 1, text: "   "),
+        makeItem(index: 2, text: "test"),
     ]
 
-    let results = matcher.matchItems(pattern: "test", items: items)
+    let results = matchItems(matcher: matcher, pattern: "test", items: items)
 
     #expect(results.count == 1)
     #expect(results[0].item.text == "test")
@@ -547,13 +579,13 @@ func caseSensitivityComparison() {
     let caseInsensitive = FuzzyMatcher(caseSensitive: false)
 
     let items = [
-        Item(index: 0, text: "README.md"),
-        Item(index: 1, text: "readme.md"),
-        Item(index: 2, text: "ReadMe.md"),
+        makeItem(index: 0, text: "README.md"),
+        makeItem(index: 1, text: "readme.md"),
+        makeItem(index: 2, text: "ReadMe.md"),
     ]
 
-    let sensitiveResults = caseSensitive.matchItems(pattern: "readme", items: items)
-    let insensitiveResults = caseInsensitive.matchItems(pattern: "readme", items: items)
+    let sensitiveResults = matchItems(matcher: caseSensitive, pattern: "readme", items: items)
+    let insensitiveResults = matchItems(matcher: caseInsensitive, pattern: "readme", items: items)
 
     // Case insensitive should match all
     #expect(insensitiveResults.count == 3)
@@ -571,15 +603,15 @@ func largeResultSetOrdering() {
 
     // Create many items with varying match quality
     var items: [Item] = []
-    items.append(Item(index: 0, text: "test.swift"))  // Best match
-    items.append(Item(index: 1, text: "test_utils.swift"))  // Good match
+    items.append(makeItem(index: 0, text: "test.swift"))  // Best match
+    items.append(makeItem(index: 1, text: "test_utils.swift"))  // Good match
 
     // Add many mediocre matches
     for i in 2..<1000 {
-        items.append(Item(index: i, text: "src/components/testing_file_\(i).swift"))
+        items.append(makeItem(index: i, text: "src/components/testing_file_\(i).swift"))
     }
 
-    let results = matcher.matchItems(pattern: "test", items: items)
+    let results = matchItems(matcher: matcher, pattern: "test", items: items)
 
     // Should match many items
     #expect(results.count >= 100)
@@ -602,24 +634,24 @@ func largeResultSetOrdering() {
 func realWorldQueryPatterns() {
     let matcher = FuzzyMatcher()
     let items = [
-        Item(index: 0, text: "src/main/java/com/example/UserController.java"),
-        Item(index: 1, text: "src/main/java/com/example/UserService.java"),
-        Item(index: 2, text: "src/main/java/com/example/user/UserRepository.java"),
-        Item(index: 3, text: "src/test/java/com/example/UserControllerTest.java"),
+        makeItem(index: 0, text: "src/main/java/com/example/UserController.java"),
+        makeItem(index: 1, text: "src/main/java/com/example/UserService.java"),
+        makeItem(index: 2, text: "src/main/java/com/example/user/UserRepository.java"),
+        makeItem(index: 3, text: "src/test/java/com/example/UserControllerTest.java"),
     ]
 
     // Pattern: searching for specific class
-    let results1 = matcher.matchItems(pattern: "UserController", items: items)
+    let results1 = matchItems(matcher: matcher, pattern: "UserController", items: items)
     #expect(results1.count >= 1)
     #expect(results1[0].item.text.contains("UserController.java"))
 
     // Pattern: searching with path hint
-    let results2 = matcher.matchItems(pattern: "test User", items: items)
+    let results2 = matchItems(matcher: matcher, pattern: "test User", items: items)
     #expect(results2.count >= 1)
     #expect(results2[0].item.text.contains("test"))
 
     // Pattern: abbreviation
-    let results3 = matcher.matchItems(pattern: "UC", items: items)
+    let results3 = matchItems(matcher: matcher, pattern: "UC", items: items)
     #expect(results3.count >= 1)
     #expect(results3[0].item.text.contains("UserController"))
 }
@@ -725,7 +757,7 @@ func scopeLongPathScattered() {
 private func syntheticResults(_ count: Int, prefix: String = "item") -> [MatchedItem] {
     (0..<count).map {
         MatchedItem(
-            item: Item(index: $0, text: "\(prefix)_\($0)"),
+            item: makeItem(index: $0, text: "\(prefix)_\($0)"),
             matchResult: MatchResult(score: count - $0, positions: [$0])
         )
     }

@@ -5,30 +5,77 @@
 /// ``slice``.  ``count`` is available in O(1) without materialising anything —
 /// this lets the status bar show the true match count without paying O(n log n)
 /// sort cost for low-selectivity queries.
-struct ResultMerger: Sendable {
-    private let partitions: [[MatchedItem]]
-    private var cursors: [Int]
-    private var materialized: [MatchedItem]
+///
+/// ### ChunkList-backed fast path
+/// When the query is empty every item matches with score 0 and insertion order
+/// *is* the rank order.  The ``chunkBacked`` case holds the ``ChunkList``
+/// directly and returns ``MatchedItem`` views on demand — **zero** ``MatchedItem``
+/// heap allocation for the entire input set.
+enum ResultMerger: Sendable {
+    /// Zero-allocation path for empty queries.  Items are enumerated in
+    /// insertion order; ``MatchedItem`` wrappers are synthesised on the fly.
+    case chunkBacked(ChunkList)
 
-    /// Total number of matched items across all partitions.
-    let count: Int
+    /// Normal path: partitions produced by ``TaskGroup``, merged lazily.
+    case partitionBacked(PartitionState)
+
+    // ── stored state for the partition path ──────────────────────────────
+    /// Mutable merge state.  Separated into its own struct so the enum case
+    /// can hold it as a single associated value without boxing overhead.
+    struct PartitionState: Sendable {
+        let partitions:   [[MatchedItem]]
+        var cursors:      [Int]
+        var materialized: [MatchedItem]
+        let count:        Int
+    }
+
+    // ── constructors ──────────────────────────────────────────────────────
 
     /// An empty merger (zero matches).
-    static let empty = ResultMerger(partitions: [])
+    static let empty = ResultMerger.partitionBacked(
+        PartitionState(partitions: [], cursors: [], materialized: [], count: 0)
+    )
 
+    /// Wrap a ``ChunkList`` for the empty-query fast path.
+    static func fromChunkList(_ cl: ChunkList) -> ResultMerger {
+        .chunkBacked(cl)
+    }
+
+    /// Wrap partition arrays from a ``TaskGroup``.
     init(partitions: [[MatchedItem]]) {
-        self.partitions = partitions
-        self.cursors = [Int](repeating: 0, count: partitions.count)
-        self.materialized = []
-        self.count = partitions.reduce(0) { $0 + $1.count }
+        let count = partitions.reduce(0) { $0 + $1.count }
+        self = .partitionBacked(
+            PartitionState(partitions: partitions, cursors: [Int](repeating: 0, count: partitions.count),
+                           materialized: [], count: count)
+        )
+    }
+
+    // ── public interface ──────────────────────────────────────────────────
+
+    /// Total number of matched items.
+    var count: Int {
+        switch self {
+        case .chunkBacked(let cl):        return cl.count
+        case .partitionBacked(let state): return state.count
+        }
     }
 
     /// Return the item at global rank *idx*, materialising lazily.
     /// Returns nil when *idx* is out of range.
     mutating func get(_ idx: Int) -> MatchedItem? {
-        guard idx >= 0, idx < count else { return nil }
-        materializeUpTo(idx)
-        return materialized[idx]
+        switch self {
+        case .chunkBacked(let cl):
+            guard idx >= 0, idx < cl.count else { return nil }
+            guard let item = cl[idx] else { return nil }
+            return MatchedItem(item: item, matchResult: MatchResult(score: 0, positions: []))
+
+        case .partitionBacked(var state):
+            guard idx >= 0, idx < state.count else { return nil }
+            state.materializeUpTo(idx)
+            let result = state.materialized[idx]
+            self = .partitionBacked(state)
+            return result
+        }
     }
 
     /// Return items in the half-open rank range [lo, hi), materialising lazily.
@@ -36,29 +83,65 @@ struct ResultMerger: Sendable {
         let clampedLo = max(0, lo)
         let clampedHi = min(hi, count)
         guard clampedLo < clampedHi else { return [] }
-        materializeUpTo(clampedHi - 1)
-        return Array(materialized[clampedLo..<clampedHi])
+
+        switch self {
+        case .chunkBacked(let cl):
+            var result = [MatchedItem]()
+            result.reserveCapacity(clampedHi - clampedLo)
+            for i in clampedLo..<clampedHi {
+                if let item = cl[i] {
+                    result.append(MatchedItem(item: item, matchResult: MatchResult(score: 0, positions: [])))
+                }
+            }
+            return result
+
+        case .partitionBacked(var state):
+            state.materializeUpTo(clampedHi - 1)
+            let result = Array(state.materialized[clampedLo..<clampedHi])
+            self = .partitionBacked(state)
+            return result
+        }
     }
 
-    /// Flatten all partitions into a flat [Item] array (unsorted).
+    /// Flatten into a flat [Item] array (unsorted for partition path).
     /// O(n) — used as the candidate set for incremental filtering where
     /// re-matching will re-score and re-sort anyway.
     func allItems() -> [Item] {
-        partitions.flatMap { $0 }.map { $0.item }
+        switch self {
+        case .chunkBacked(let cl):
+            var items = [Item]()
+            items.reserveCapacity(cl.count)
+            cl.forEach { items.append($0) }
+            return items
+
+        case .partitionBacked(let state):
+            return state.partitions.flatMap { $0 }.map { $0.item }
+        }
     }
 
     /// Return items whose item.index is in *indices*, sorted by index.
     /// O(n) scan — only called once on exit for multi-select.
     func selectedItems(indices: Set<Int>) -> [Item] {
-        partitions.flatMap { $0 }
-            .filter { indices.contains($0.item.index) }
-            .map { $0.item }
-            .sorted { $0.index < $1.index }
+        switch self {
+        case .chunkBacked(let cl):
+            var result = [Item]()
+            cl.forEach { item in
+                if indices.contains(item.index) { result.append(item) }
+            }
+            return result.sorted { $0.index < $1.index }
+
+        case .partitionBacked(let state):
+            return state.partitions.flatMap { $0 }
+                .filter { indices.contains($0.item.index) }
+                .map { $0.item }
+                .sorted { $0.index < $1.index }
+        }
     }
+}
 
-    // MARK: - k-way merge
-
-    private mutating func materializeUpTo(_ idx: Int) {
+// ── k-way merge (on PartitionState) ──────────────────────────────────────────
+extension ResultMerger.PartitionState {
+    mutating func materializeUpTo(_ idx: Int) {
         while materialized.count <= idx {
             var bestPartition = -1
             for i in 0..<partitions.count {

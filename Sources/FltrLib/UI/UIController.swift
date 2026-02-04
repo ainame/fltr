@@ -57,9 +57,6 @@ actor UIController {
     // Pending render flag - ensures we don't queue up multiple renders
     private var renderScheduled = false
 
-    // Cached reference to all items (updated when new items arrive)
-    private var allItems: [Item] = []
-
     // Merger-level result cache (mirrors fzf's mergerCache).
     // Keyed on (pattern, itemCount).  Invalidated whenever allItems changes.
     // Only stores results when count <= mergerCacheMax to avoid holding huge
@@ -121,10 +118,10 @@ actor UIController {
         // Note: Terminal cleanup is guaranteed by RawTerminal's deinit,
         // but we explicitly call exitRawMode() for proper cleanup
         // Initial load (might be empty if stdin is slow)
-        self.allItems = await cache.getAllItems()
-        lastItemCount = self.allItems.count
-        state.totalItems = self.allItems.count
-        let initialMatches = await engine.matchItemsParallel(pattern: "", items: self.allItems)
+        let initialChunkList = await cache.snapshotChunkList()
+        lastItemCount = initialChunkList.count
+        state.totalItems = initialChunkList.count
+        let initialMatches = await engine.matchChunksParallel(pattern: "", chunkList: initialChunkList, cache: chunkCache)
         state.updateMatches(initialMatches)
 
         await updatePreview()
@@ -146,7 +143,6 @@ actor UIController {
                 // Now capture state - previous task has updated merger
                 let previousQuerySnapshot = self.state.previousQuery
                 let currentMergerSnapshot = self.state.merger
-                let allItemsSnapshot = self.allItems
                 let chunkListSnapshot = await self.cache.snapshotChunkList()
 
                 // Update previousQuery for next iteration
@@ -155,11 +151,6 @@ actor UIController {
                 // Run matching completely outside the actor (nonisolated)
                 currentMatchTask = Task.detached {
                     let overallStart = Date()
-
-                    // Use captured snapshots (avoid async reads that can race)
-                    let readStart = Date()
-                    let allItems = allItemsSnapshot
-                    let readTime = Date().timeIntervalSince(readStart) * 1000
 
                     // Use previousQuery snapshot from before Task.detached
                     let previousQuery = previousQuerySnapshot
@@ -171,33 +162,30 @@ actor UIController {
                                            update.query.hasPrefix(previousQuery) &&
                                            update.query.count > previousQuery.count
 
-                    let searchItems = canUseIncremental ? currentMergerSnapshot.allItems() : allItems
-
                     // Merger cache: on the full-search path, check whether we
                     // already have results for this exact (pattern, itemCount).
                     // Skip the cache on the incremental path — the candidate set
                     // is a subset and would produce a different result set.
                     let results: ResultMerger
-                    if !canUseIncremental, let cached = await self.lookupMergerCache(pattern: update.query, itemCount: allItems.count) {
+                    if !canUseIncremental, let cached = await self.lookupMergerCache(pattern: update.query, itemCount: chunkListSnapshot.count) {
                         results = cached
                     } else {
-                        // Match items (this is the expensive operation)
                         let matchStart = Date()
                         let matchedResults: ResultMerger
                         if canUseIncremental {
-                            // Incremental path: candidate set is a flat [Item], not chunk-aligned
+                            // Incremental path: candidate set is a flat [Item] from previous results
+                            let searchItems = currentMergerSnapshot.allItems()
                             matchedResults = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
                         } else {
                             // Full-search path: use per-chunk cache for keystroke-2+ speed
                             matchedResults = await engine.matchChunksParallel(pattern: update.query, chunkList: chunkListSnapshot, cache: chunkCache)
                         }
                         let matchTime = Date().timeIntervalSince(matchStart) * 1000
-
                         let totalTime = Date().timeIntervalSince(overallStart) * 1000
 
                         // Diagnostic output to log file
-                        if readTime > 1 || matchTime > 10 {
-                            let logMsg = "[\(update.query)] read: \(String(format: "%.1f", readTime))ms, match: \(String(format: "%.1f", matchTime))ms (\(searchItems.count) items → \(matchedResults.count) results), total: \(String(format: "%.1f", totalTime))ms\n"
+                        if matchTime > 10 {
+                            let logMsg = "[\(update.query)] match: \(String(format: "%.1f", matchTime))ms (\(chunkListSnapshot.count) items → \(matchedResults.count) results), total: \(String(format: "%.1f", totalTime))ms\n"
                             if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/fltr-perf.log")) {
                                 handle.seekToEndOfFile()
                                 handle.write(logMsg.data(using: .utf8)!)
@@ -209,7 +197,7 @@ actor UIController {
 
                         // Store in merger cache only on the full-search path
                         if !canUseIncremental {
-                            await self.storeMergerCache(pattern: update.query, itemCount: allItems.count, results: matchedResults)
+                            await self.storeMergerCache(pattern: update.query, itemCount: chunkListSnapshot.count, results: matchedResults)
                         }
                         results = matchedResults
                     }
@@ -254,7 +242,7 @@ actor UIController {
                     // New items arrived! Update if enough time passed
                     let now = Date()
                     if now.timeIntervalSince(lastRefresh) >= refreshInterval {
-                        // Update count without blocking on getAllItems()
+                        // Update count immediately
                         lastItemCount = currentCount
                         state.totalItems = currentCount
 
@@ -262,10 +250,8 @@ actor UIController {
                         fetchItemsTask?.cancel()
                         currentMatchTask?.cancel()
 
-                        // Fetch items and re-match in background (doesn't block input!)
+                        // Fetch chunk-list snapshot and re-match in background (doesn't block input!)
                         fetchItemsTask = Task.detached { [cache, engine, chunkCache, previewCommand, previewManager] in
-                            // Get all items and chunk-list snapshot outside the actor
-                            let newItems = await cache.getAllItems()
                             let chunkListSnapshot = await cache.snapshotChunkList()
 
                             let query = await self.state.query
@@ -284,7 +270,7 @@ actor UIController {
                             let results = await engine.matchChunksParallel(pattern: query, chunkList: chunkListSnapshot, cache: chunkCache)
 
                             // Cache the fresh full-search results
-                            await self.storeMergerCache(pattern: query, itemCount: newItems.count, results: results)
+                            await self.storeMergerCache(pattern: query, itemCount: chunkListSnapshot.count, results: results)
 
                             // Update state
                             await self.applyMatchResults(results)
@@ -297,15 +283,7 @@ actor UIController {
                             // Render
                             await self.render()
 
-                            // Return new items to update allItems
-                            return newItems
-                        }
-
-                        // Update allItems when task completes (if not cancelled)
-                        Task {
-                            if let newItems = await fetchItemsTask?.value {
-                                self.allItems = newItems
-                            }
+                            return []  // fetchItemsTask signature kept for cancellation tracking
                         }
 
                         lastRefresh = now

@@ -84,25 +84,55 @@ struct FuzzyMatcher: Sendable {
         return MatchResult(score: totalScore, positions: allPositions)
     }
 
-    /// Match pattern against items and return sorted results
-    func matchItems(pattern: String, items: [Item]) -> [MatchedItem] {
-        let trimmedPattern = pattern.trimmingCharacters(in: .whitespaces)
-
-        guard !trimmedPattern.isEmpty else {
-            // Empty pattern matches everything with score 0
-            return items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: []), scheme: scheme) }
+    /// Zero-copy overload: *textBuf* is a pre-sliced ``UnsafeBufferPointer``
+    /// into a ``TextBuffer``.  Avoids constructing a ``String`` on the hot path.
+    /// Multi-token (space-separated AND) is supported; each token calls the
+    /// ``textBuf`` overload of ``Utf8FuzzyMatch``.
+    func match(pattern: String, textBuf: UnsafeBufferPointer<UInt8>) -> MatchResult? {
+        guard !pattern.isEmpty else {
+            return MatchResult(score: 0, positions: [])
         }
 
-        var matched: [MatchedItem] = []
-        for item in items {
-            if let result = match(pattern: trimmedPattern, text: item.text) {
-                matched.append(MatchedItem(item: item, matchResult: result, scheme: scheme))
+        guard pattern.utf8.contains(0x20) else {
+            return Utf8FuzzyMatch.match(pattern: pattern, textBuf: textBuf, caseSensitive: caseSensitive)
+        }
+
+        let tokens = pattern.split(separator: " ", omittingEmptySubsequences: true)
+        guard !tokens.isEmpty else {
+            return MatchResult(score: 0, positions: [])
+        }
+        if tokens.count == 1 {
+            return Utf8FuzzyMatch.match(pattern: String(tokens[0]), textBuf: textBuf, caseSensitive: caseSensitive)
+        }
+
+        var totalScore = 0
+        var allPositions: [Int] = []
+
+        for token in tokens {
+            guard let result = Utf8FuzzyMatch.match(pattern: String(token), textBuf: textBuf, caseSensitive: caseSensitive) else {
+                return nil
             }
+            totalScore += result.score
+            allPositions.append(contentsOf: result.positions)
         }
 
-        matched.sort(by: rankLessThan)
-        return matched
+        if !allPositions.isEmpty {
+            allPositions.sort()
+            var writeIndex = 1
+            for readIndex in 1..<allPositions.count {
+                if allPositions[readIndex] != allPositions[readIndex - 1] {
+                    if writeIndex != readIndex {
+                        allPositions[writeIndex] = allPositions[readIndex]
+                    }
+                    writeIndex += 1
+                }
+            }
+            allPositions.removeLast(allPositions.count - writeIndex)
+        }
+
+        return MatchResult(score: totalScore, positions: allPositions)
     }
+
 }
 
 /// Item with match result and precomputed ranking points.

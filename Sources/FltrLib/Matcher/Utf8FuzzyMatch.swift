@@ -163,6 +163,20 @@ public struct Utf8FuzzyMatch: Sendable {
     }
 
     // ─── Main entry ────────────────────────────────────────────────────────
+
+    /// Zero-copy overload: *textBuf* is a pre-sliced view into a ``TextBuffer``.
+    /// Avoids constructing a ``String`` on the hot path.
+    public static func match(pattern: String, textBuf: UnsafeBufferPointer<UInt8>, caseSensitive: Bool = false) -> MatchResult? {
+        guard !pattern.isEmpty else { return MatchResult(score: 0, positions: []) }
+
+        let patternSpan = pattern.utf8.span
+        let textSpan = Span(_unsafeElements: textBuf)
+        let M = patternSpan.count, N = textSpan.count
+        guard M <= N else { return nil }
+
+        return _matchCore(patSpan: patternSpan, txtSpan: textSpan, M: M, N: N, caseSensitive: caseSensitive)
+    }
+
     public static func match(pattern: String, text: String, caseSensitive: Bool = false) -> MatchResult? {
         guard !pattern.isEmpty else { return MatchResult(score: 0, positions: []) }
 
@@ -171,6 +185,11 @@ public struct Utf8FuzzyMatch: Sendable {
         let M = patSpan.count, N = txtSpan.count
         guard M <= N else { return nil }
 
+        return _matchCore(patSpan: patSpan, txtSpan: txtSpan, M: M, N: N, caseSensitive: caseSensitive)
+    }
+
+    // ─── Shared core ───────────────────────────────────────────────────────
+    private static func _matchCore(patSpan: Span<UInt8>, txtSpan: Span<UInt8>, M: Int, N: Int, caseSensitive: Bool) -> MatchResult? {
         let buf = matrixBuffer ?? MatrixBuffer()
         buf.ensureI32(M + N)
 

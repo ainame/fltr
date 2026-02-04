@@ -28,6 +28,8 @@ actor TestTerminal: Terminal {
 
     func flush() {}
 
+    var ttyBroken: Bool { false }
+
     func readByte() -> UInt8? {
         guard !inputQueue.isEmpty else { return nil }
         return inputQueue.removeFirst()
