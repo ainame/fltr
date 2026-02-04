@@ -36,6 +36,15 @@ final class TextBuffer: @unchecked Sendable {
         return (offset, length)
     }
 
+    /// Append a slice of a raw byte buffer directly — no ``String`` is created.
+    /// *src* must remain valid for the duration of the call.
+    @inlinable
+    func appendRaw(_ src: UnsafeBufferPointer<UInt8>, offset: Int, length: Int) -> (offset: UInt32, length: UInt32) {
+        let writeOffset = UInt32(bytes.count)
+        bytes.append(contentsOf: UnsafeBufferPointer(start: src.baseAddress! + offset, count: length))
+        return (writeOffset, UInt32(length))
+    }
+
     /// Return a ``String`` view of the region ``[offset, offset+length)``.
     /// Allocates a new ``String``; call only on the cold path (rendering, output).
     @inlinable
