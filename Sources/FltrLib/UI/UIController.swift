@@ -73,6 +73,11 @@ actor UIController {
     // Shared across TaskGroup partitions; internally locked.
     private let chunkCache = ChunkCache()
 
+    // Set to true the moment the exit decision is made.  Guards render() and
+    // applyMatchResults() so that in-flight detached tasks cannot spill ANSI
+    // escape sequences onto stdout after ttyFd has been closed.
+    private var isExiting = false
+
     init(terminal: any Terminal, matcher: FuzzyMatcher, cache: ItemCache, reader: StdinReader, maxHeight: Int? = nil, multiSelect: Bool = false, previewCommand: String? = nil, useFloatingPreview: Bool = false, debounceDelay: Duration = .milliseconds(50)) {
         self.terminal = terminal
         self.matcher = matcher
@@ -326,6 +331,13 @@ actor UIController {
             }
         }
 
+        // Freeze state and suppress any in-flight renders before we tear down
+        // the terminal.  Without this, a detached match task that races past
+        // its cancellation checkpoint can call render() while UIController is
+        // suspended on exitRawMode(), enqueue a write on RawTerminal after
+        // ttyFd is closed, and spill the entire UI frame onto stdout.
+        isExiting = true
+
         // Clean up tasks
         queryUpdateContinuation.finish()
         currentMatchTask?.cancel()
@@ -425,6 +437,7 @@ actor UIController {
     /// Apply match results to state (actor-isolated, fast)
     /// Note: previousQuery is updated before matching starts to prevent race conditions
     private func applyMatchResults(_ results: [MatchedItem]) {
+        guard !isExiting else { return }
         state.updateMatches(results)
     }
 
@@ -514,6 +527,7 @@ actor UIController {
     }
 
     private func render() async {
+        guard !isExiting else { return }
         let (rows, cols) = (try? await terminal.getSize()) ?? (24, 80)
 
         // Calculate available rows for items
