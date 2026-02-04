@@ -65,7 +65,7 @@ actor UIController {
     // Only stores results when count <= mergerCacheMax to avoid holding huge
     // arrays in memory for low-selectivity queries.
     private var mergerCachePattern: String = ""
-    private var mergerCacheResults: [MatchedItem] = []
+    private var mergerCacheResults: ResultMerger = .empty
     private var mergerCacheItemCount: Int = 0
     private static let mergerCacheMax = 100_000
 
@@ -138,14 +138,14 @@ actor UIController {
         let debounceTask = Task { [engine, chunkCache, previewCommand, previewManager] in
             for await update in queryUpdateStream.debounce(for: debounceDelay) {
                 // Wait for previous task to complete before starting new one
-                // This ensures state.matchedItems has the latest results for incremental filtering
+                // This ensures state.merger has the latest results for incremental filtering
                 if let prevTask = currentMatchTask {
                     _ = await prevTask.value
                 }
 
-                // Now capture state - previous task has updated matchedItems
+                // Now capture state - previous task has updated merger
                 let previousQuerySnapshot = self.state.previousQuery
-                let currentMatchesSnapshot = self.state.matchedItems
+                let currentMergerSnapshot = self.state.merger
                 let allItemsSnapshot = self.allItems
                 let chunkListSnapshot = await self.cache.snapshotChunkList()
 
@@ -159,36 +159,31 @@ actor UIController {
                     // Use captured snapshots (avoid async reads that can race)
                     let readStart = Date()
                     let allItems = allItemsSnapshot
-                    let currentMatches = currentMatchesSnapshot
                     let readTime = Date().timeIntervalSince(readStart) * 1000
 
                     // Use previousQuery snapshot from before Task.detached
                     let previousQuery = previousQuerySnapshot
 
-                    // Determine search items based on incremental filtering.
-                    // Guard: previous results must not have been capped by topN.
-                    // When count == maxResults the result set is a lossy top-N
-                    // subset; items that match the longer query but scored poorly
-                    // on the shorter one are missing, so incremental would
-                    // permanently under-count.
+                    // Incremental filtering: when the new query extends the
+                    // previous one the previous match set is a strict superset —
+                    // no cap exists, so narrowing is lossless.
                     let canUseIncremental = !previousQuery.isEmpty &&
                                            update.query.hasPrefix(previousQuery) &&
-                                           update.query.count > previousQuery.count &&
-                                           currentMatches.count < engine.maxResults
+                                           update.query.count > previousQuery.count
 
-                    let searchItems = canUseIncremental ? currentMatches.map { $0.item } : allItems
+                    let searchItems = canUseIncremental ? currentMergerSnapshot.allItems() : allItems
 
                     // Merger cache: on the full-search path, check whether we
                     // already have results for this exact (pattern, itemCount).
                     // Skip the cache on the incremental path — the candidate set
                     // is a subset and would produce a different result set.
-                    let results: [MatchedItem]
+                    let results: ResultMerger
                     if !canUseIncremental, let cached = await self.lookupMergerCache(pattern: update.query, itemCount: allItems.count) {
                         results = cached
                     } else {
                         // Match items (this is the expensive operation)
                         let matchStart = Date()
-                        let matchedResults: [MatchedItem]
+                        let matchedResults: ResultMerger
                         if canUseIncremental {
                             // Incremental path: candidate set is a flat [Item], not chunk-aligned
                             matchedResults = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
@@ -223,7 +218,7 @@ actor UIController {
                     await self.applyMatchResults(results)
 
                     // Update preview if needed (in background)
-                    if previewCommand != nil, let manager = previewManager, !results.isEmpty {
+                    if previewCommand != nil, let manager = previewManager, results.count > 0 {
                         await self.updatePreviewAsync(manager: manager, command: previewCommand!)
                     }
 
@@ -295,7 +290,7 @@ actor UIController {
                             await self.applyMatchResults(results)
 
                             // Update preview if needed
-                            if previewCommand != nil, let manager = previewManager, !results.isEmpty {
+                            if previewCommand != nil, let manager = previewManager, results.count > 0 {
                                 await self.updatePreviewAsync(manager: manager, command: previewCommand!)
                             }
 
@@ -429,20 +424,19 @@ actor UIController {
 
     /// Apply match results to state (actor-isolated, fast)
     /// Note: previousQuery is updated before matching starts to prevent race conditions
-    private func applyMatchResults(_ results: [MatchedItem]) {
+    private func applyMatchResults(_ results: ResultMerger) {
         guard !isExiting else { return }
         state.updateMatches(results)
     }
 
     /// Update preview asynchronously in background
     private func updatePreviewAsync(manager: PreviewManager, command: String) async {
-        guard !state.matchedItems.isEmpty else {
+        guard let selectedItem = state.merger.get(state.selectedIndex) else {
             cachedPreview = ""
             previewScrollOffset = 0
             return
         }
 
-        let selectedItem = state.matchedItems[state.selectedIndex]
         let newPreview = await manager.executeCommand(command, item: selectedItem.item.text)
 
         // Update cached preview (actor-isolated)
@@ -471,7 +465,7 @@ actor UIController {
     // MARK: - Merger cache helpers (actor-isolated, O(1))
 
     /// Return cached results if pattern and item-count match the last stored entry.
-    private func lookupMergerCache(pattern: String, itemCount: Int) -> [MatchedItem]? {
+    private func lookupMergerCache(pattern: String, itemCount: Int) -> ResultMerger? {
         guard pattern == mergerCachePattern && itemCount == mergerCacheItemCount else { return nil }
         return mergerCacheResults
     }
@@ -479,7 +473,7 @@ actor UIController {
     /// Store results in the merger cache.  Gated by mergerCacheMax so that
     /// low-selectivity queries (e.g. single character on 800 k items) do not
     /// occupy memory with little reuse benefit.
-    private func storeMergerCache(pattern: String, itemCount: Int, results: [MatchedItem]) {
+    private func storeMergerCache(pattern: String, itemCount: Int, results: ResultMerger) {
         guard results.count <= Self.mergerCacheMax else { return }
         mergerCachePattern = pattern
         mergerCacheResults = results
@@ -489,7 +483,7 @@ actor UIController {
     /// Invalidate the merger cache (called whenever allItems is refreshed).
     private func invalidateMergerCache() {
         mergerCachePattern = ""
-        mergerCacheResults = []
+        mergerCacheResults = .empty
         mergerCacheItemCount = 0
     }
 
@@ -528,8 +522,13 @@ actor UIController {
             showFloatingPreview: showFloatingPreview
         )
 
+        // Materialise the visible window from the merger before assembling the
+        // frame.  assembleFrame receives state by value so it cannot call
+        // mutating Merger methods itself.
+        let visibleItems = state.merger.slice(state.scrollOffset, state.scrollOffset + displayHeight)
+
         // Build entire frame in a single buffer to minimize actor calls
-        var buffer = renderer.assembleFrame(state: state, context: context)
+        var buffer = renderer.assembleFrame(state: state, visibleItems: visibleItems, context: context)
 
         // Render split preview if enabled
         if showSplitPreview {
@@ -565,13 +564,12 @@ actor UIController {
     /// Update preview for currently selected item
     private func updatePreview() async {
         guard let manager = previewManager, let command = previewCommand else { return }
-        guard !state.matchedItems.isEmpty else {
+        guard let selectedItem = state.merger.get(state.selectedIndex) else {
             cachedPreview = ""
             previewScrollOffset = 0
             return
         }
 
-        let selectedItem = state.matchedItems[state.selectedIndex]
         let newPreview = await manager.executeCommand(command, item: selectedItem.item.text)
 
         // Reset scroll offset when preview content changes (new item selected)
@@ -599,9 +597,7 @@ actor UIController {
     private func renderFloatingPreview(rows: Int, cols: Int) -> (PreviewBounds?, String) {
         guard showFloatingPreview, let manager = previewManager else { return (nil, "") }
 
-        let itemName = !state.matchedItems.isEmpty
-            ? state.matchedItems[state.selectedIndex].item.text
-            : ""
+        let itemName = state.merger.get(state.selectedIndex)?.item.text ?? ""
 
         return manager.renderFloatingPreview(
             content: cachedPreview,

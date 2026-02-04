@@ -8,7 +8,8 @@ struct UIState: Sendable {
     var selectedIndex: Int = 0
     var scrollOffset: Int = 0  // First visible item index
     var selectedItems: Set<Int> = []
-    var matchedItems: [MatchedItem] = []
+    var merger: ResultMerger = .empty
+    var matchCount: Int = 0  // = merger.count; cached so the renderer can read it from a by-value copy
     var totalItems: Int = 0
     var shouldExit: Bool = false
     var exitWithSelection: Bool = false
@@ -72,7 +73,7 @@ struct UIState: Sendable {
     }
 
     mutating func moveDown(visibleHeight: Int) {
-        if selectedIndex < matchedItems.count - 1 {
+        if selectedIndex < matchCount - 1 {
             selectedIndex += 1
             // Scroll down if selected item goes below visible area
             let lastVisibleIndex = scrollOffset + visibleHeight - 1
@@ -83,8 +84,8 @@ struct UIState: Sendable {
     }
 
     mutating func toggleSelection() {
-        guard selectedIndex < matchedItems.count else { return }
-        let itemIndex = matchedItems[selectedIndex].item.index
+        guard let item = merger.get(selectedIndex) else { return }
+        let itemIndex = item.item.index
 
         if selectedItems.contains(itemIndex) {
             selectedItems.remove(itemIndex)
@@ -93,32 +94,30 @@ struct UIState: Sendable {
         }
     }
 
-    mutating func updateMatches(_ items: [MatchedItem]) {
-        matchedItems = items
-        if selectedIndex >= items.count {
-            selectedIndex = max(0, items.count - 1)
+    mutating func updateMatches(_ newMerger: ResultMerger) {
+        merger = newMerger
+        matchCount = merger.count
+        if selectedIndex >= matchCount {
+            selectedIndex = max(0, matchCount - 1)
         }
         // Reset scroll to top when matches change
         scrollOffset = 0
     }
 
-    func getSelectedItems() -> [Item] {
+    mutating func getSelectedItems() -> [Item] {
         if !exitWithSelection {
             return []
         }
 
         if selectedItems.isEmpty {
             // Return current item if nothing explicitly selected
-            if selectedIndex < matchedItems.count {
-                return [matchedItems[selectedIndex].item]
+            if let item = merger.get(selectedIndex) {
+                return [item.item]
             }
             return []
         }
 
-        // Return all selected items in original order
-        return matchedItems
-            .map { $0.item }
-            .filter { selectedItems.contains($0.index) }
-            .sorted { $0.index < $1.index }
+        // Return all selected items in original order (O(n) scan, only on exit)
+        return merger.selectedItems(indices: selectedItems)
     }
 }

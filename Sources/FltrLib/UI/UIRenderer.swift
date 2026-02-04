@@ -6,8 +6,10 @@ struct UIRenderer: Sendable {
     let maxHeight: Int?
     let multiSelect: Bool
 
-    /// Assemble complete frame buffer for rendering
-    func assembleFrame(state: UIState, context: RenderContext) -> String {
+    /// Assemble complete frame buffer for rendering.
+    /// *visibleItems* is the already-sliced window from the caller (UIController
+    /// materialises it from the ResultMerger so we never need a mutable merger here).
+    func assembleFrame(state: UIState, visibleItems: [MatchedItem], context: RenderContext) -> String {
         let (rows, cols) = (context.rows, context.cols)
 
         // Calculate available rows for items
@@ -40,26 +42,22 @@ struct UIRenderer: Sendable {
 
         // Render matched items (positions each line)
         buffer += renderItemList(
-            matchedItems: state.matchedItems,
+            visibleItems: visibleItems,
             selectedIndex: state.selectedIndex,
             selectedItems: state.selectedItems,
             scrollOffset: state.scrollOffset,
-            displayHeight: displayHeight,
             cols: listWidth
         )
 
-        // Calculate actual number of items rendered
-        let actualItemsRendered = min(max(0, state.matchedItems.count - state.scrollOffset), displayHeight)
-
         // Render status bar (positions itself)
         buffer += renderStatusBar(
-            matchedCount: state.matchedItems.count,
+            matchedCount: state.matchCount,
             totalItems: state.totalItems,
             selectedItems: state.selectedItems,
             isReadingStdin: context.isReadingStdin,
             scrollOffset: state.scrollOffset,
             displayHeight: displayHeight,
-            row: actualItemsRendered + 3,
+            row: visibleItems.count + 3,
             cols: listWidth
         )
 
@@ -111,13 +109,14 @@ struct UIRenderer: Sendable {
         return "\u{001B}[2;1H" + dimColor + border + resetColor + "\u{001B}[K"
     }
 
-    /// Render item list with highlighting
+    /// Render item list with highlighting.
+    /// *visibleItems* is already the scrolled window; *scrollOffset* is used
+    /// only to map display indices back to global indices for selection checks.
     private func renderItemList(
-        matchedItems: [MatchedItem],
+        visibleItems: [MatchedItem],
         selectedIndex: Int,
         selectedItems: Set<Int>,
         scrollOffset: Int,
-        displayHeight: Int,
         cols: Int
     ) -> String {
         // Pre-define ANSI codes to avoid repeated string allocations
@@ -126,15 +125,10 @@ struct UIRenderer: Sendable {
         let bgColor = "\u{001B}[48;5;236m"
         let resetAll = "\u{001B}[0m"
 
-        // Get visible slice of matched items based on scrollOffset
-        let startIndex = scrollOffset
-        let endIndex = min(startIndex + displayHeight, matchedItems.count)
-        let visibleItems = Array(matchedItems[startIndex..<endIndex])
-
         var buffer = ""
         for (displayIndex, matchedItem) in visibleItems.enumerated() {
             let row = displayIndex + 3  // Start from row 3 (after input on row 1 and border on row 2)
-            let actualIndex = startIndex + displayIndex
+            let actualIndex = scrollOffset + displayIndex
 
             let isSelected = selectedIndex == actualIndex
             let isMarked = selectedItems.contains(matchedItem.item.index)
