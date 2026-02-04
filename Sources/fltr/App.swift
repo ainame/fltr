@@ -31,6 +31,9 @@ struct App: AsyncParsableCommand {
     @Option(name: .long, help: "Ranking scheme: default (score, length), path (score, pathname, length), history (score only). Mirrors fzf --scheme.")
     var scheme: String = "path"
 
+    @Option(name: .long, help: "Non-interactive query mode: read stdin, search for QUERY, print top results with rank points. Useful for scripting and debugging.")
+    var query: String?
+
     mutating func run() async throws {
         guard let sortScheme = SortScheme.parse(scheme) else {
             throw ValidationError("invalid --scheme '\(scheme)' (expected: default, path, history)")
@@ -45,7 +48,11 @@ struct App: AsyncParsableCommand {
                 scheme: sortScheme,
             )
         )
-        try await runner.run()
+        if let query = query {
+            try await runner.runQuery(query)
+        } else {
+            try await runner.run()
+        }
     }
 }
 

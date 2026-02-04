@@ -272,6 +272,15 @@ public struct Utf8FuzzyMatch: Sendable {
                 let T   = i32 + offT
                 let Fp  = i32              // F[0…M−1]
 
+                // Clear H and C so that cells below each row's fRel —
+                // which the DP loop never writes — do not retain stale
+                // positive scores from a previous call on a reused buffer.
+                // Without this the backtrack's best-score scan and diagonal
+                // reads can pick up phantom scores and diverge, producing
+                // garbage (often negative) positions.
+                H.initialize(repeating: 0, count: W * M)
+                C.initialize(repeating: 0, count: W * M)
+
                 // Row 0 ← H0 / C0
                 for j in f0rel..<W {
                     H[j] = H0p[j]

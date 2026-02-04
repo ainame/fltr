@@ -25,6 +25,31 @@ public struct Runner {
         self.options = options
     }
 
+    /// Non-interactive query mode: read all stdin, run the same matchChunksParallel
+    /// path the interactive UI uses, and dump top results with rank points to stdout.
+    public func runQuery(_ query: String) async throws {
+        let cache = ItemCache()
+        let reader = StdinReader(cache: cache)
+        let readTask = await reader.startReading()
+
+        // Wait for stdin to finish — no timeout, we need the full dataset
+        await readTask.value
+
+        let matcher = FuzzyMatcher(caseSensitive: options.caseSensitive, scheme: options.scheme)
+        let engine = MatchingEngine(matcher: matcher)
+        let chunkList = await cache.snapshotChunkList()
+        let chunkCache = ChunkCache()
+
+        let results = await engine.matchChunksParallel(pattern: query, chunkList: chunkList, cache: chunkCache)
+
+        let totalItems = await cache.count()
+        print("[query='\(query)' scheme=\(options.scheme) results=\(results.count)/\(totalItems)]")
+        print("")
+        for (i, m) in results.prefix(30).enumerated() {
+            print("  #\(i + 1)  score=\(m.score)  pts=(\(m.points.3),\(m.points.2),\(m.points.1),\(m.points.0))  pos=\(m.matchResult.positions)  \(m.item.text)")
+        }
+    }
+
     public func run() async throws {
         // Initialize components
         let cache = ItemCache()
