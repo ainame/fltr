@@ -165,10 +165,16 @@ actor UIController {
                     // Use previousQuery snapshot from before Task.detached
                     let previousQuery = previousQuerySnapshot
 
-                    // Determine search items based on incremental filtering
+                    // Determine search items based on incremental filtering.
+                    // Guard: previous results must not have been capped by topN.
+                    // When count == maxResults the result set is a lossy top-N
+                    // subset; items that match the longer query but scored poorly
+                    // on the shorter one are missing, so incremental would
+                    // permanently under-count.
                     let canUseIncremental = !previousQuery.isEmpty &&
                                            update.query.hasPrefix(previousQuery) &&
-                                           update.query.count > previousQuery.count
+                                           update.query.count > previousQuery.count &&
+                                           currentMatches.count < engine.maxResults
 
                     let searchItems = canUseIncremental ? currentMatches.map { $0.item } : allItems
 
@@ -485,32 +491,6 @@ actor UIController {
         mergerCachePattern = ""
         mergerCacheResults = []
         mergerCacheItemCount = 0
-    }
-
-    /// Incremental filtering: search within previous results if query is extended
-    /// Uses parallel matching engine for large datasets
-    private func updateMatchesIncremental(allItems: [Item]) async {
-        let newQuery = state.query
-        let prevQuery = state.previousQuery
-
-        // Check if new query extends previous query (e.g., "ab" -> "abc")
-        let canUseIncremental = !prevQuery.isEmpty &&
-                                newQuery.hasPrefix(prevQuery) &&
-                                newQuery.count > prevQuery.count
-
-        let searchItems: [Item]
-        if canUseIncremental {
-            // Search within previous matched items (much faster!)
-            searchItems = state.matchedItems.map { $0.item }
-        } else {
-            // Full search in all items
-            searchItems = allItems
-        }
-
-        // Use parallel matching engine
-        let results = await engine.matchItemsParallel(pattern: newQuery, items: searchItems)
-        state.updateMatches(results)
-        state.previousQuery = newQuery
     }
 
     private func render() async {

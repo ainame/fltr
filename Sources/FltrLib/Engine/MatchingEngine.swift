@@ -5,7 +5,7 @@ import Foundation
 struct MatchingEngine: Sendable {
     private let matcher: FuzzyMatcher
     private let parallelThreshold: Int  // Minimum items to use parallel matching
-    private let maxResults: Int  // Maximum results to keep (limits sorting overhead)
+    let maxResults: Int  // Maximum results to keep (limits sorting overhead)
 
     init(matcher: FuzzyMatcher, parallelThreshold: Int = 1000, maxResults: Int = 10000) {
         self.matcher = matcher
