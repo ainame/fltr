@@ -110,25 +110,24 @@ struct MatchedItem: Sendable {
         let byScore = UInt16(clamping: maxU16 - matchResult.score)
 
         // --- byPathname (points[2]) ---
-        // Find the last path separator in the text.
-        var lastDelim = -1
-        for (i, ch) in text.utf8.enumerated() {
-            if ch == 0x2F || ch == 0x5C {   // '/' or '\'
-                lastDelim = i
-            }
-        }
-        // minBegin = byte offset of the first matched character
+        // Find the last path separator at or before the match start.
+        // This measures how far into its own path segment the match begins —
+        // a match right after a '/' (distance 1) ranks above one mid-segment.
+        // Using the separator immediately before minBegin (rather than the last
+        // separator in the whole string) keeps directory-children like
+        // "../renovate/lib" on equal footing with "../renovate-wrapper" when
+        // both match "renovate" right after a '/'.
         let minBegin = matchResult.positions.first ?? 0
-        let byPathname: UInt16
-        if lastDelim <= minBegin {
-            // Match is entirely in the filename portion (after last separator).
-            // Value = distance from separator to match start.  Smaller = better
-            // (match closer to the filename start).
-            byPathname = UInt16(clamping: minBegin - lastDelim)
-        } else {
-            // Match spans into or is entirely in a directory component — penalise
-            byPathname = UInt16.max
+        var delimBeforeMatch = -1
+        var idx = 0
+        for ch in text.utf8 {
+            if idx >= minBegin { break }
+            if ch == 0x2F || ch == 0x5C {   // '/' or '\'
+                delimBeforeMatch = idx
+            }
+            idx += 1
         }
+        let byPathname = UInt16(clamping: minBegin - delimBeforeMatch)
 
         // --- byLength (points[1]) ---  shorter items rank higher
         // fzf uses TrimLength (trailing whitespace stripped).  We approximate
