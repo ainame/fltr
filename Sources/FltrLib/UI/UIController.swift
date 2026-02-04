@@ -528,7 +528,9 @@ actor UIController {
 
     private func render() async {
         guard !isExiting else { return }
-        let (rows, cols) = (try? await terminal.getSize()) ?? (24, 80)
+        let rawSize = (try? await terminal.getSize()) ?? (24, 80)
+        let rows = max(5, rawSize.0)   // minimum viable layout height
+        let cols = max(10, rawSize.1)  // minimum viable layout width
 
         // Calculate available rows for items
         // Layout: row 1 = input, row 2 = border, rows 3..N = items, row N+1 = status
