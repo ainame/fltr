@@ -30,7 +30,7 @@ The project has two main targets:
 fltr (Executable)
 ├── Matcher/      - FuzzyMatchV2 algorithm (modified Smith-Waterman)
 ├── Storage/      - ItemCache (actor), ChunkList with InlineArray
-├── Engine/       - MatchingEngine (parallel matching via TaskGroup)
+├── Engine/       - MatchingEngine + ResultMerger (parallel matching via TaskGroup)
 ├── Reader/       - StdinReader (streaming, non-blocking)
 └── UI/           - Modular UI components
     ├── UIController.swift     - Event loop orchestrator (actor, ~340 lines)
@@ -55,13 +55,15 @@ FltrCSystem (C Shim Library)
 
 - **ItemCache** (`Sources/fltr/Storage/ItemCache.swift`): Actor-based thread-safe storage using chunk-based architecture (100 items per chunk) with InlineArray for zero-heap allocation.
 
-- **MatchingEngine** (`Sources/fltr/Engine/MatchingEngine.swift`): Parallel matching using TaskGroup. Smart threshold: only parallelizes for >1000 items.
+- **MatchingEngine** (`Sources/fltr/Engine/MatchingEngine.swift`): Parallel matching using TaskGroup. Smart threshold: only parallelizes for >1000 items. Each partition sorts locally; results are returned as a `ResultMerger`.
 
-- **UIController** (`Sources/fltr/UI/UIController.swift`): Main event loop orchestrator with 100ms refresh interval for streaming data. Coordinates between InputHandler, UIRenderer, and PreviewManager components.
+- **ResultMerger** (`Sources/fltr/Engine/ResultMerger.swift`): Lazy k-way merge of per-partition sorted results (mirrors fzf's Merger). `count` is O(1); `get`/`slice` materialise in global rank order on demand — the terminal only pays for the visible window, not a full O(n log n) sort.
+
+- **UIController** (`Sources/fltr/UI/UIController.swift`): Main event loop orchestrator with 100ms refresh interval for streaming data. Coordinates between InputHandler, UIRenderer, and PreviewManager components. Materialises the visible item window from the ResultMerger before each render pass.
 
 - **InputHandler** (`Sources/fltr/UI/InputHandler.swift`): Parses keyboard/mouse events (escape sequences, arrow keys, mouse scrolling) and routes them to appropriate state updates.
 
-- **UIRenderer** (`Sources/fltr/UI/UIRenderer.swift`): Renders UI elements (input field with cursor, item list, status bar, borders) using single-buffer strategy for performance.
+- **UIRenderer** (`Sources/fltr/UI/UIRenderer.swift`): Renders UI elements (input field with cursor, item list, status bar, borders) using single-buffer strategy for performance. Receives the pre-sliced visible item window as a parameter (materialised by UIController).
 
 - **PreviewManager** (`Sources/fltr/UI/PreviewManager.swift`): Executes preview commands with timeout and renders both split-screen (fzf style) and floating window previews.
 
@@ -121,7 +123,8 @@ Key optimizations implemented:
 - Static delimiter set in CharClass (eliminates allocations per search)
 - Matrix buffer reuse via TaskLocal storage
 - Zero-copy iteration in ChunkList
-- Incremental filtering (searches previous results when query extends)
+- Incremental filtering: when the query extends the previous one, searches within the previous match set (lossless — results are never capped)
+- Lazy materialisation via ResultMerger: only the visible ~20–50 rows are sorted globally; per-partition sort is O(k log k) where k = partition size
 - `@inlinable` on hot path functions
 
 ### Benchmarking matching changes
