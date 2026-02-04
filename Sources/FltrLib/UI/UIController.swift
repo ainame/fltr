@@ -267,36 +267,23 @@ actor UIController {
                             let newItems = await cache.getAllItems()
                             let chunkListSnapshot = await cache.snapshotChunkList()
 
-                            // Determine search items
                             let query = await self.state.query
-                            let previousQuery = await self.state.previousQuery
-                            let currentMatches = await self.state.matchedItems
-
-                            let canUseIncremental = !previousQuery.isEmpty &&
-                                                   query.hasPrefix(previousQuery) &&
-                                                   query.count > previousQuery.count
-
-                            let searchItems = canUseIncremental ? currentMatches.map { $0.item } : newItems
-
-                            // Update previousQuery before matching to prevent race condition
-                            await self.updatePreviousQuery(query)
 
                             // Item count changed → invalidate stale caches before matching
                             await self.invalidateMergerCache()
                             chunkCache.clear()
 
-                            // Match items: full-search uses per-chunk cache; incremental stays flat
-                            let results: [MatchedItem]
-                            if canUseIncremental {
-                                results = await engine.matchItemsParallel(pattern: query, items: searchItems)
-                            } else {
-                                results = await engine.matchChunksParallel(pattern: query, chunkList: chunkListSnapshot, cache: chunkCache)
-                            }
+                            // Always do a full search against the fresh item set.
+                            // Do NOT use incremental filtering here: previousQuery is
+                            // owned by the debounce task.  Writing it from fetchItemsTask
+                            // causes a race where the debounce path sees a stale
+                            // previousQuery (e.g. "j" while the user typed "json") and
+                            // incorrectly narrows its candidate set to the top-N matches
+                            // of that earlier query, capping results permanently.
+                            let results = await engine.matchChunksParallel(pattern: query, chunkList: chunkListSnapshot, cache: chunkCache)
 
-                            // Cache the fresh results on the full-search path
-                            if !canUseIncremental {
-                                await self.storeMergerCache(pattern: query, itemCount: newItems.count, results: results)
-                            }
+                            // Cache the fresh full-search results
+                            await self.storeMergerCache(pattern: query, itemCount: newItems.count, results: results)
 
                             // Update state
                             await self.applyMatchResults(results)
