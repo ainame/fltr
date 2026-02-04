@@ -53,7 +53,9 @@ FltrCSystem (C Shim Library)
 
 - **FuzzyMatcher** (`Sources/fltr/Matcher/`): Fuzzy matching with space-separated AND queries. Uses FuzzyMatchV2 with scoring bonuses for word boundaries, CamelCase, and consecutive matches.
 
-- **ItemCache** (`Sources/fltr/Storage/ItemCache.swift`): Actor-based thread-safe storage using chunk-based architecture (100 items per chunk) with InlineArray for zero-heap allocation.
+- **ItemCache** (`Sources/fltr/Storage/ItemCache.swift`): Actor-based thread-safe storage.  Owns the single ``TextBuffer`` (contiguous ``[UInt8]`` for all input text) and a ``ChunkStore``.  Items are registered via ``registerItem(offset:length:)`` — only two ``UInt32`` values cross the actor boundary per line.
+
+- **ChunkStore / ChunkList** (`Sources/fltr/Storage/ChunkList.swift`): Items are grouped into 100-item ``Chunk`` structs (``InlineArray<100>``, ~2.4 KB each).  The live store keeps a ``frozen`` array of sealed (full) chunks and a mutable ``tail``.  A snapshot (``ChunkList``) captures ``frozen`` by value (Swift CoW — zero physical copy at snapshot time) and copies only the ``tail`` (~2.4 KB).  CoW materialises a copy only when the *next* chunk seals — once per 100 items rather than once per item — so concurrent snapshots during streaming share the same backing storage and add negligible RSS.
 
 - **MatchingEngine** (`Sources/fltr/Engine/MatchingEngine.swift`): Parallel matching using TaskGroup. Smart threshold: only parallelizes for >1000 items. Each partition sorts locally; results are returned as a `ResultMerger`.
 
@@ -120,9 +122,11 @@ Raw Input → UIController.handleKey()
 ## Performance Optimizations
 
 Key optimizations implemented:
+- **TextBuffer**: all input text lives in a single contiguous ``[UInt8]``; each ``Item`` is an ``(offset, length)`` window — no per-line ``String`` heap allocation
+- **fread-based StdinReader**: 64 KB read buffer, byte-scan for newlines, whitespace trimmed without Foundation; bytes appended directly into TextBuffer off-actor
+- **ChunkStore frozen/tail split**: sealed chunks are CoW-shared across snapshots; the tail (~2.4 KB) is the only per-snapshot copy, so concurrent streaming snapshots add negligible RSS
 - Static delimiter set in CharClass (eliminates allocations per search)
 - Matrix buffer reuse via TaskLocal storage
-- Zero-copy iteration in ChunkList
 - Incremental filtering: when the query extends the previous one, searches within the previous match set (lossless — results are never capped)
 - Lazy materialisation via ResultMerger: only the visible ~20–50 rows are sorted globally; per-partition sort is O(k log k) where k = partition size
 - `@inlinable` on hot path functions
