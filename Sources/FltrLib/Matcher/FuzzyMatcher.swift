@@ -70,18 +70,84 @@ struct FuzzyMatcher: Sendable {
             }
         }
 
-        // Sort by score (descending)
-        matched.sort { $0.matchResult.score > $1.matchResult.score }
+        matched.sort(by: rankLessThan)
         return matched
     }
 }
 
-/// Item with match result
+/// Item with match result and precomputed ranking points.
+///
+/// Ranking mirrors fzf's "path" scheme: `[byScore, byPathname, byLength]`.
+/// Points are packed into four UInt16 slots stored lower-is-better; the
+/// comparison walks from index 3 (highest priority) down to 0.
+///   points[3] = byScore      (MaxUInt16 − score)
+///   points[2] = byPathname   (distance from match-start to last path separator;
+///                              MaxUInt16 when match crosses the separator)
+///   points[1] = byLength     (trimmed item length)
+///   points[0] = unused (0)
 struct MatchedItem: Sendable {
     let item: Item
     let matchResult: MatchResult
+    /// Precomputed rank key.  Compare with `rankLessThan(_:_:)`.
+    let points: (UInt16, UInt16, UInt16, UInt16)   // [0] … [3]
+
+    init(item: Item, matchResult: MatchResult) {
+        self.item = item
+        self.matchResult = matchResult
+        self.points = MatchedItem.buildPoints(text: item.text, matchResult: matchResult)
+    }
 
     var score: Int {
         matchResult.score
     }
+
+    // MARK: - Rank-point construction  (mirrors fzf result.go : buildResult)
+
+    private static func buildPoints(text: String, matchResult: MatchResult) -> (UInt16, UInt16, UInt16, UInt16) {
+        let maxU16 = Int(UInt16.max)
+
+        // --- byScore (points[3]) ---  higher score → lower value
+        let byScore = UInt16(clamping: maxU16 - matchResult.score)
+
+        // --- byPathname (points[2]) ---
+        // Find the last path separator in the text.
+        var lastDelim = -1
+        for (i, ch) in text.utf8.enumerated() {
+            if ch == 0x2F || ch == 0x5C {   // '/' or '\'
+                lastDelim = i
+            }
+        }
+        // minBegin = byte offset of the first matched character
+        let minBegin = matchResult.positions.first ?? 0
+        let byPathname: UInt16
+        if lastDelim <= minBegin {
+            // Match is entirely in the filename portion (after last separator).
+            // Value = distance from separator to match start.  Smaller = better
+            // (match closer to the filename start).
+            byPathname = UInt16(clamping: minBegin - lastDelim)
+        } else {
+            // Match spans into or is entirely in a directory component — penalise
+            byPathname = UInt16.max
+        }
+
+        // --- byLength (points[1]) ---  shorter items rank higher
+        // fzf uses TrimLength (trailing whitespace stripped).  We approximate
+        // with the full UTF-8 byte length; trimming whitespace here would cost
+        // an allocation on every item.
+        let byLength = UInt16(clamping: text.utf8.count)
+
+        return (0, byLength, byPathname, byScore)
+    }
+}
+
+/// Compare two MatchedItems by their rank points.
+/// Returns true when `a` should sort before `b` (i.e. `a` is more relevant).
+/// Walks points[3]…points[0]; lower value wins at each level.
+/// Ties broken by original insertion order (item.index ascending).
+func rankLessThan(_ a: MatchedItem, _ b: MatchedItem) -> Bool {
+    if a.points.3 != b.points.3 { return a.points.3 < b.points.3 }
+    if a.points.2 != b.points.2 { return a.points.2 < b.points.2 }
+    if a.points.1 != b.points.1 { return a.points.1 < b.points.1 }
+    if a.points.0 != b.points.0 { return a.points.0 < b.points.0 }
+    return a.item.index < b.item.index
 }

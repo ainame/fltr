@@ -7,7 +7,8 @@ public struct Utf8FuzzyMatch: Sendable {
     static let scoreMatch = 16
     static let scoreGapStart = -3
     static let scoreGapExtension = -1
-    static let bonusConsecutive = 4
+    static let bonusBoundary = scoreMatch / 2          // 8  – threshold for consecutive-chunk break
+    static let bonusConsecutive = -(scoreGapStart + scoreGapExtension)  // 4
     static let bonusFirstCharMultiplier = 2
 
     /// Reusable matrix buffer to avoid repeated allocations.
@@ -19,10 +20,15 @@ public struct Utf8FuzzyMatch: Sendable {
         /// Flat row-major storage.  Access: index = row * stride + col
         var H: [Int] = []
         var lastMatch: [Int] = []
+        /// Consecutive-match count at each cell (mirrors fzf's C matrix).
+        /// C[i][j] = length of the consecutive matching chunk ending at (i, j).
+        var C: [Int] = []
 
         /// Pooled per-call buffers (grown but never shrunk)
         var charClasses: [CharClass] = []
         var loweredText: [UInt8] = []
+        /// Per-position bonus cache (mirrors fzf's B array)
+        var bonusCache: [Int] = []
 
         /// Current dimensions of the allocated grid
         private var allocatedRows: Int = 0
@@ -53,6 +59,7 @@ public struct Utf8FuzzyMatch: Sendable {
                 let size = rows * cols
                 H = [Int](repeating: 0, count: size)
                 lastMatch = [Int](repeating: -1, count: size)
+                C = [Int](repeating: 0, count: size)
                 allocatedRows = rows
                 allocatedCols = cols
                 freshlyAllocated = true
@@ -75,6 +82,7 @@ public struct Utf8FuzzyMatch: Sendable {
                 for j in 0...textLen {
                     H[base + j] = Int.min / 2
                     lastMatch[base + j] = -1
+                    C[base + j] = 0
                 }
             }
             // Row 0 of lastMatch: only index 0 could theoretically be read; safe default.
@@ -87,6 +95,7 @@ public struct Utf8FuzzyMatch: Sendable {
             if charClasses.count < count {
                 charClasses = [CharClass](repeating: .letter, count: count)
                 loweredText = [UInt8](repeating: 0, count: count)
+                bonusCache = [Int](repeating: 0, count: count)
             }
         }
     }
@@ -115,26 +124,49 @@ public struct Utf8FuzzyMatch: Sendable {
 
     /// Precomputed 6×6 bonus table.  Row = previous class index, col = current
     /// class index.  Flat layout: bonusTable[previous.index * 6 + current.index].
-    /// Initialised once at module load; replaces the per-cell switch in the DP
-    /// inner loop with a single array access.
+    /// Mirrors fzf's bonusFor() with the "path" scheme:
+    ///   bonusBoundaryWhite     = 8   (scoreMatch / 2)
+    ///   bonusBoundaryDelimiter = 9   (scoreMatch / 2 + 1)
+    ///   bonusCamel123          = 7   (bonusBoundary + scoreGapExtension)
+    /// Boundary bonuses only fire when current class is a word character
+    /// (lower / upper / letter / number).
     @usableFromInline
     static let bonusTable: [Int] = {
         // Index mapping (must match CharClass.index):
         //   0 = whitespace, 1 = delimiter, 2 = lower, 3 = upper, 4 = letter, 5 = number
-        let cases: [CharClass] = [.whitespace, .delimiter, .lower, .upper, .letter, .number]
+        let bonusBoundaryWhite     = 8   // scoreMatch / 2
+        let bonusBoundaryDelimiter = 9   // scoreMatch / 2 + 1  (path scheme)
+        let bonusCamel123          = 7   // bonusBoundary + scoreGapExtension
+
         var t = [Int](repeating: 0, count: 36)
+        let cases: [CharClass] = [.whitespace, .delimiter, .lower, .upper, .letter, .number]
         for prev in 0..<6 {
             for cur in 0..<6 {
                 let p = cases[prev]
                 let c = cases[cur]
-                // Mirror the exact logic from the original bonus() switch
-                switch (c, p) {
-                case (_, .whitespace): t[prev * 6 + cur] = 8
-                case (_, .delimiter):  t[prev * 6 + cur] = 7
-                case (.upper, .lower): t[prev * 6 + cur] = 7
-                case (.lower, .upper): t[prev * 6 + cur] = 6
-                default:               t[prev * 6 + cur] = 0
+
+                // Boundary bonuses: only when current is a word character
+                let isWord = (c == .lower || c == .upper || c == .letter || c == .number)
+                if isWord {
+                    switch p {
+                    case .whitespace:
+                        t[prev * 6 + cur] = bonusBoundaryWhite
+                        continue
+                    case .delimiter:
+                        t[prev * 6 + cur] = bonusBoundaryDelimiter
+                        continue
+                    default:
+                        break
+                    }
                 }
+
+                // camelCase: lower → upper  OR  (non-number) → number
+                if p == .lower && c == .upper {
+                    t[prev * 6 + cur] = bonusCamel123
+                } else if p != .number && c == .number {
+                    t[prev * 6 + cur] = bonusCamel123
+                }
+                // All other transitions: 0 (already initialised)
             }
         }
         return t
@@ -256,72 +288,111 @@ public struct Utf8FuzzyMatch: Sendable {
         buffer.resize(patternLen: patternLen, textLen: textLen)
         buffer.clear(patternLen: patternLen, textLen: textLen)
 
-        // Pre-compute charClasses and (optionally) lowered text bytes into pooled buffers.
-        // This eliminates per-cell toLower calls inside the DP inner loop and avoids
-        // allocating a fresh [CharClass] array on every match() invocation.
+        // Pre-compute charClasses, lowered text bytes, and per-position bonus
+        // into pooled buffers.  Position 0 uses initialCharClass = delimiter
+        // (path scheme), matching fzf's behaviour for file-path inputs.
         buffer.resizeTextBuffers(count: textLen)
         for i in 0..<textLen {
             let raw = textSpan[i]
             buffer.charClasses[i] = classify(raw)
             buffer.loweredText[i] = caseSensitive ? raw : toLower(raw)
         }
+        // Fill bonus cache: B[i] = bonus for matching at text position i.
+        // Position 0: previous class is implicitly .delimiter (path scheme →
+        // bonusBoundaryDelimiter = 9), mirroring fzf's initialCharClass = charDelimiter.
+        buffer.bonusCache[0] = Self.bonusTable[CharClass.delimiter.index * 6 + buffer.charClasses[0].index]
+        for i in 1..<textLen {
+            buffer.bonusCache[i] = Self.bonusTable[buffer.charClasses[i - 1].index * 6 + buffer.charClasses[i].index]
+        }
 
         let stride = buffer.stride
 
         // Initialize row 0: empty pattern matches with score 0.
-        // Only need to cover [0 … scopeLast+1] — cells beyond scopeLast are
-        // never read by the clamped DP or best-score loops.
-        let row0End = scopeLast + 1   // scopeLast is inclusive byte index; j = scopeLast+1 is the last DP column we touch
+        let row0End = scopeLast + 1
         for j in 0...row0End {
             buffer.H[j] = 0
             buffer.lastMatch[j] = -1
+            buffer.C[j] = 0
         }
 
-        // Pre-lower the pattern bytes once (outside all loops)
-        // and store in a small stack-friendly buffer.  Patterns are short
-        // (typically < 64 bytes) so a fixed array avoids a heap alloc.
-        // For patterns > 256 bytes we fall back to a heap array.
+        // Pre-lower the pattern bytes once (outside all loops).
         let patternLowered: [UInt8]
         if caseSensitive {
-            patternLowered = []  // unused; we read patternSpan directly
+            patternLowered = []
         } else {
             patternLowered = (0..<patternLen).map { toLower(patternSpan[$0]) }
         }
 
-        // Fill DP table using byte-level comparisons.
-        // j is clamped to the scope window: only columns that could participate
-        // in an optimal alignment are visited.  Columns outside the window stay
-        // at Int.min/2 (set by clear()) which correctly represents "unreachable".
+        // Fill DP table.  Mirrors fzf FuzzyMatchV2 Phase 3 closely:
+        //   H[i][j]  – best score matching pattern[0..<i] against text[0..<j]
+        //   C[i][j]  – consecutive-match run length ending at (i, j)
+        //   inGap    – per-row flag distinguishing gapStart from gapExtension
+        //
+        // Key fzf behaviours reproduced here:
+        //   • bonusFirstCharMultiplier = 2 on the first pattern row (i == 1)
+        //   • consecutive chunk bonus = max(B[j], firstBonus, bonusConsecutive)
+        //     where firstBonus is B at the start of the current consecutive run
+        //   • gap penalty: scoreGapStart on first gap cell, scoreGapExtension after
+        //   • scores floor at 0 (a match is never worse than "no match")
         let jStart = max(1, scopeFirst + 1)
-        let jEnd   = scopeLast + 1   // inclusive; scopeLast is the byte index of the rightmost last-pattern-byte
+        let jEnd   = scopeLast + 1
         for i in 1...patternLen {
-            // Hoist pattern byte out of inner loop — depends only on i
             let patternByte = caseSensitive ? patternSpan[i - 1] : patternLowered[i - 1]
-            let rowBase = i * stride
+            let rowBase     = i * stride
             let prevRowBase = (i - 1) * stride
+            var inGap = false
 
             for j in jStart...jEnd {
                 let textByte = buffer.loweredText[j - 1]
 
+                // s1 = score if we match pattern[i-1] at text position j-1
+                // s2 = score if we skip text position j-1 (gap)
+                var s1 = Int.min / 2
+                var consecutive = 0
+
                 if patternByte == textByte {
-                    // Character match — bonus via precomputed table (single array access)
-                    let bonus: Int
-                    if j == 1 {
-                        bonus = 8  // First character bonus
+                    let b = buffer.bonusCache[j - 1]   // positional bonus for text[j-1]
+                    s1 = buffer.H[prevRowBase + j - 1] + scoreMatch
+
+                    consecutive = buffer.C[prevRowBase + j - 1] + 1
+                    if consecutive > 1 {
+                        // Propagate the bonus from the start of this consecutive
+                        // chunk (fb), mirroring fzf's chunk-bonus logic.
+                        let fb = buffer.bonusCache[j - 1 - consecutive + 1]
+                        if b >= bonusBoundary && b > fb {
+                            // Current position starts a better boundary run;
+                            // reset consecutive to 1.
+                            consecutive = 1
+                            s1 += (i == 1) ? b * bonusFirstCharMultiplier : b
+                        } else {
+                            let chunkBonus = max(b, fb, bonusConsecutive)
+                            s1 += (i == 1) ? chunkBonus * bonusFirstCharMultiplier : chunkBonus
+                        }
                     } else {
-                        bonus = Self.bonusTable[buffer.charClasses[j - 2].index * 6 + buffer.charClasses[j - 1].index]
+                        // Start of a new consecutive chunk (or isolated match)
+                        s1 += (i == 1) ? b * bonusFirstCharMultiplier : b
                     }
+                }
 
-                    // Check for consecutive match
-                    let consecutiveBonus = (buffer.lastMatch[prevRowBase + j - 1] == j - 2) ? bonusConsecutive : 0
-
-                    let matchScore = buffer.H[prevRowBase + j - 1] + scoreMatch + bonus + consecutiveBonus
-                    buffer.H[rowBase + j] = matchScore
-                    buffer.lastMatch[rowBase + j] = j - 1
+                let s2: Int
+                if inGap {
+                    s2 = buffer.H[rowBase + j - 1] + scoreGapExtension
                 } else {
-                    // Gap: carry forward best score from left
-                    buffer.H[rowBase + j] = buffer.H[rowBase + j - 1] + scoreGapExtension
+                    s2 = buffer.H[rowBase + j - 1] + scoreGapStart
+                }
+
+                if s1 >= s2 {
+                    // Match wins (or tie — prefer match for backtracking)
+                    buffer.H[rowBase + j] = max(s1, 0)
+                    buffer.C[rowBase + j] = consecutive
+                    buffer.lastMatch[rowBase + j] = j - 1
+                    inGap = false
+                } else {
+                    // Gap wins
+                    buffer.H[rowBase + j] = max(s2, 0)
+                    buffer.C[rowBase + j] = 0
                     buffer.lastMatch[rowBase + j] = buffer.lastMatch[rowBase + j - 1]
+                    inGap = true
                 }
             }
         }

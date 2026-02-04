@@ -68,34 +68,27 @@ struct MatchingEngine: Sendable {
                 }
             }
 
-            // Collect results from all tasks with early termination
+            // Collect results from all tasks.
+            // No early termination: cutting off partitions mid-flight produces
+            // a non-deterministic subset that becomes the incremental base on
+            // re-type, causing visible inconsistency.  topN() below is already
+            // O(n + k log k), so collecting all matches first is cheap relative
+            // to the matching work itself.
             var allMatches: [MatchedItem] = []
-            // Reserve capacity for better performance
             allMatches.reserveCapacity(min(items.count, maxResults * 2))
 
             for await partitionResults in group {
-                // Check cancellation while collecting results
                 guard !Task.isCancelled else { break }
                 allMatches.append(contentsOf: partitionResults)
-
-                // Aggressive early termination: stop as soon as we have enough candidates
-                // We need some buffer (1.5x) because we haven't sorted yet
-                if allMatches.count >= maxResults + (maxResults / 2) {
-                    group.cancelAll()
-                    break
-                }
             }
 
             // Limit and sort results for performance
             // With 800k items, "a" might match 200k - sorting that is O(n log n) = expensive!
             // Only keep top N results since UI can only display ~50 anyway
             if allMatches.count > maxResults {
-                // Use partial sort for better performance: O(n + k log k) instead of O(n log n)
-                // where k = maxResults and n = total matches
                 return topN(from: allMatches, count: maxResults)
             } else {
-                // Small result set - just sort normally
-                allMatches.sort { $0.matchResult.score > $1.matchResult.score }
+                allMatches.sort(by: rankLessThan)
                 return allMatches
             }
         }
@@ -139,25 +132,18 @@ struct MatchingEngine: Sendable {
                 }
             }
 
-            // Collect with early termination
             var allMatches: [MatchedItem] = []
             allMatches.reserveCapacity(min(items.count, maxResults * 2))
 
             for await partitionResults in group {
                 guard !Task.isCancelled else { break }
                 allMatches.append(contentsOf: partitionResults)
-
-                if allMatches.count >= maxResults + (maxResults / 2) {
-                    group.cancelAll()
-                    break
-                }
             }
 
-            // Limit and sort
             if allMatches.count > maxResults {
                 return topN(from: allMatches, count: maxResults)
             } else {
-                allMatches.sort { $0.matchResult.score > $1.matchResult.score }
+                allMatches.sort(by: rankLessThan)
                 return allMatches
             }
         }
@@ -250,60 +236,48 @@ struct MatchingEngine: Sendable {
                 startIdx = endIdx
             }
 
-            // Collect with early termination
             var allMatches: [MatchedItem] = []
             allMatches.reserveCapacity(min(chunkList.count, maxResults * 2))
 
             for await partitionResults in group {
                 guard !Task.isCancelled else { break }
                 allMatches.append(contentsOf: partitionResults)
-
-                if allMatches.count >= maxResults + (maxResults / 2) {
-                    group.cancelAll()
-                    break
-                }
             }
 
             if allMatches.count > maxResults {
                 return topN(from: allMatches, count: maxResults)
             } else {
-                allMatches.sort { $0.matchResult.score > $1.matchResult.score }
+                allMatches.sort(by: rankLessThan)
                 return allMatches
             }
         }
     }
 
-    /// Select top N items by score without fully sorting
-    /// Uses partial sort: O(n + k log k) instead of O(n log n)
-    /// where n = input size, k = count
+    /// Select top N items by rank without fully sorting.
+    /// Uses quickselect-style partitioning: O(n + k log k) instead of O(n log n).
     private func topN(from matches: [MatchedItem], count: Int) -> [MatchedItem] {
         guard matches.count > count else {
-            return matches.sorted { $0.matchResult.score > $1.matchResult.score }
+            return matches.sorted(by: rankLessThan)
         }
 
-        // Use nth_element approach: partition around kth element
         var working = matches
-
-        // Find the kth largest score using quickselect-style partitioning
-        // This moves top k elements to the front (unsorted)
         let k = count
         var left = 0
         var right = working.count - 1
 
         while left < right {
-            let pivotScore = working[right].matchResult.score
+            let pivot = working[right]
             var i = left
 
-            // Partition: move items >= pivot to the left
+            // Partition: move items that rank before (or equal to) pivot to the left
             for j in left..<right {
-                if working[j].matchResult.score >= pivotScore {
+                if rankLessThan(working[j], pivot) || (!rankLessThan(pivot, working[j])) {
                     working.swapAt(i, j)
                     i += 1
                 }
             }
             working.swapAt(i, right)
 
-            // Check if we found the kth position
             if i == k {
                 break
             } else if i > k {
@@ -313,9 +287,8 @@ struct MatchingEngine: Sendable {
             }
         }
 
-        // Take top k and sort them
         var topK = Array(working.prefix(k))
-        topK.sort { $0.matchResult.score > $1.matchResult.score }
+        topK.sort(by: rankLessThan)
         return topK
     }
 }
