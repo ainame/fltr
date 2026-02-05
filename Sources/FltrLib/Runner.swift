@@ -47,7 +47,8 @@ public struct Runner {
         print("[query='\(query)' scheme=\(options.scheme) results=\(merger.count)/\(totalItems)]")
         print("")
         for (i, m) in merger.slice(0, 30).enumerated() {
-            print("  #\(i + 1)  score=\(m.score)  pts=(\(m.points.3),\(m.points.2),\(m.points.1),\(m.points.0))  pos=\(m.matchResult.positions)  \(m.item.text(in: buf))")
+            let p = m.points
+            print("  #\(i + 1)  score=\(m.score)  pts=(\(p >> 48 & 0xFFFF),\(p >> 32 & 0xFFFF),\(p >> 16 & 0xFFFF),\(p & 0xFFFF))  pos=\(m.matchResult.positions)  \(m.item.text(in: buf))")
         }
     }
 

@@ -177,6 +177,18 @@ public struct Utf8FuzzyMatch: Sendable {
         return _matchCore(patSpan: patternSpan, txtSpan: textSpan, M: M, N: N, caseSensitive: caseSensitive)
     }
 
+    /// Span overload: pattern is already a byte slice (e.g. a token extracted
+    /// from a multi-token pattern).  Zero allocation — no String round-trip.
+    static func match(patternSpan: Span<UInt8>, textBuf: UnsafeBufferPointer<UInt8>, caseSensitive: Bool) -> MatchResult? {
+        guard !patternSpan.isEmpty else { return MatchResult(score: 0, positions: []) }
+
+        let textSpan = Span(_unsafeElements: textBuf)
+        let M = patternSpan.count, N = textSpan.count
+        guard M <= N else { return nil }
+
+        return _matchCore(patSpan: patternSpan, txtSpan: textSpan, M: M, N: N, caseSensitive: caseSensitive)
+    }
+
     public static func match(pattern: String, text: String, caseSensitive: Bool = false) -> MatchResult? {
         guard !pattern.isEmpty else { return MatchResult(score: 0, positions: []) }
 

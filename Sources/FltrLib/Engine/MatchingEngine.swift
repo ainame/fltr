@@ -24,7 +24,7 @@ struct MatchingEngine: Sendable {
             let emptyResult = MatchResult(score: 0, positions: [])
             let all = items.map { item in
                 MatchedItem(item: item, matchResult: emptyResult,
-                            points: (0, UInt16(clamping: Int(item.length)), 0, UInt16.max))
+                            points: MatchedItem.packPoints(0, UInt16(clamping: Int(item.length)), 0, UInt16.max))
             }
             return ResultMerger(partitions: [all])
         }
@@ -44,16 +44,23 @@ struct MatchingEngine: Sendable {
         let partitionSize = max(100, items.count / cpuCount)
 
         return await withTaskGroup(of: [MatchedItem].self) { group in
-            for partition in items.chunked(into: partitionSize) {
+            var startIdx = 0
+            while startIdx < items.count {
+                let endIdx = min(startIdx + partitionSize, items.count)
+                let partStart = startIdx
+                let partEnd   = endIdx
+
                 group.addTask {
                     guard !Task.isCancelled else { return [] }
 
                     return buffer.withBytes { allBytes in
                         Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
-                            self.matchItemsFromBuffer(pattern: pattern, items: partition, allBytes: allBytes)
+                            self.matchItemsFromBuffer(pattern: pattern, items: Array(items[partStart..<partEnd]), allBytes: allBytes)
                         }
                     }
                 }
+
+                startIdx = endIdx
             }
 
             var partitions = [[MatchedItem]]()
@@ -193,11 +200,4 @@ struct MatchingEngine: Sendable {
     }
 }
 
-// Helper extension for chunking arrays
-extension Array {
-    func chunked(into size: Int) -> [[Element]] {
-        stride(from: 0, to: count, by: size).map {
-            Array(self[$0..<Swift.min($0 + size, count)])
-        }
-    }
-}
+

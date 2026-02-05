@@ -86,49 +86,58 @@ struct FuzzyMatcher: Sendable {
 
     /// Zero-copy overload: *textBuf* is a pre-sliced ``UnsafeBufferPointer``
     /// into a ``TextBuffer``.  Avoids constructing a ``String`` on the hot path.
-    /// Multi-token (space-separated AND) is supported; each token calls the
-    /// ``textBuf`` overload of ``Utf8FuzzyMatch``.
+    /// Multi-token (space-separated AND) is supported; tokens are extracted as
+    /// ``Span<UInt8>`` slices of the pattern's UTF-8 — no ``String`` per token.
     func match(pattern: String, textBuf: UnsafeBufferPointer<UInt8>) -> MatchResult? {
         guard !pattern.isEmpty else {
             return MatchResult(score: 0, positions: [])
         }
 
-        guard pattern.utf8.contains(0x20) else {
-            return Utf8FuzzyMatch.match(pattern: pattern, textBuf: textBuf, caseSensitive: caseSensitive)
+        let patSpan = pattern.utf8.span
+
+        // Fast path: no space → single token, skip the walk entirely.
+        var hasSpace = false
+        for i in 0..<patSpan.count { if patSpan[i] == 0x20 { hasSpace = true; break } }
+        guard hasSpace else {
+            return Utf8FuzzyMatch.match(patternSpan: patSpan, textBuf: textBuf, caseSensitive: caseSensitive)
         }
 
-        let tokens = pattern.split(separator: " ", omittingEmptySubsequences: true)
-        guard !tokens.isEmpty else {
-            return MatchResult(score: 0, positions: [])
-        }
-        if tokens.count == 1 {
-            return Utf8FuzzyMatch.match(pattern: String(tokens[0]), textBuf: textBuf, caseSensitive: caseSensitive)
-        }
-
+        // Multi-token: walk the span once, slicing on spaces.
         var totalScore = 0
         var allPositions: [Int] = []
+        var tokenStart = 0
 
-        for token in tokens {
-            guard let result = Utf8FuzzyMatch.match(pattern: String(token), textBuf: textBuf, caseSensitive: caseSensitive) else {
-                return nil
-            }
-            totalScore += result.score
-            allPositions.append(contentsOf: result.positions)
-        }
-
-        if !allPositions.isEmpty {
-            allPositions.sort()
-            var writeIndex = 1
-            for readIndex in 1..<allPositions.count {
-                if allPositions[readIndex] != allPositions[readIndex - 1] {
-                    if writeIndex != readIndex {
-                        allPositions[writeIndex] = allPositions[readIndex]
+        for i in 0...patSpan.count {   // iterate one past end to flush last token
+            let isEnd = (i == patSpan.count)
+            if isEnd || patSpan[i] == 0x20 {
+                if i > tokenStart {   // skip runs of spaces
+                    let tokenSpan = patSpan.extracting(tokenStart..<i)
+                    guard let result = Utf8FuzzyMatch.match(patternSpan: tokenSpan, textBuf: textBuf, caseSensitive: caseSensitive) else {
+                        return nil
                     }
-                    writeIndex += 1
+                    totalScore += result.score
+                    allPositions.append(contentsOf: result.positions)
                 }
+                tokenStart = i + 1
             }
-            allPositions.removeLast(allPositions.count - writeIndex)
         }
+
+        guard !allPositions.isEmpty else {
+            return MatchResult(score: 0, positions: [])
+        }
+
+        // Sort and deduplicate in-place
+        allPositions.sort()
+        var writeIndex = 1
+        for readIndex in 1..<allPositions.count {
+            if allPositions[readIndex] != allPositions[readIndex - 1] {
+                if writeIndex != readIndex {
+                    allPositions[writeIndex] = allPositions[readIndex]
+                }
+                writeIndex += 1
+            }
+        }
+        allPositions.removeLast(allPositions.count - writeIndex)
 
         return MatchResult(score: totalScore, positions: allPositions)
     }
@@ -137,17 +146,17 @@ struct FuzzyMatcher: Sendable {
 
 /// Item with match result and precomputed ranking points.
 ///
-/// Points are packed into four UInt16 slots (lower-is-better); the
-/// comparison walks from index 3 (highest priority) down to 0.
-///   points[3] = byScore      (MaxUInt16 − score)                   always active
-///   points[2] = byPathname   (segment-local distance)              path scheme only; 0 otherwise
-///   points[1] = byLength     (UTF-8 byte length)                   default & path; 0 for history
-///   points[0] = unused (0)
+/// Points are packed into a single UInt64 (lower-is-better) so that the
+/// entire rank key compares with a single ``<``.  Bit layout (MSB → LSB):
+///   bits 48…63  byScore      (MaxUInt16 − score)                   always active
+///   bits 32…47  byPathname   (segment-local distance)              path scheme only; 0 otherwise
+///   bits 16…31  byLength     (UTF-8 byte length)                   default & path; 0 for history
+///   bits  0…15  unused (0)
 struct MatchedItem: Sendable {
     let item: Item
     let matchResult: MatchResult
     /// Precomputed rank key.  Compare with `rankLessThan(_:_:)`.
-    let points: (UInt16, UInt16, UInt16, UInt16)   // [0] … [3]
+    let points: UInt64
 
     /// Hot-path init: *allBytes* is the live ``TextBuffer`` pointer (held by the
     /// caller's ``withBytes`` scope).  No ``String`` allocation.
@@ -161,10 +170,17 @@ struct MatchedItem: Sendable {
 
     /// Fast init with pre-computed points — used by the chunkBacked zero-alloc
     /// path where score is 0, positions are empty, and byPathname is irrelevant.
-    init(item: Item, matchResult: MatchResult, points: (UInt16, UInt16, UInt16, UInt16)) {
+    init(item: Item, matchResult: MatchResult, points: UInt64) {
         self.item = item
         self.matchResult = matchResult
         self.points = points
+    }
+
+    /// Pack four UInt16 rank slots into a single UInt64.  Argument order
+    /// matches the old tuple layout: (unused, byLength, byPathname, byScore).
+    @inlinable
+    static func packPoints(_ s0: UInt16, _ s1: UInt16, _ s2: UInt16, _ s3: UInt16) -> UInt64 {
+        UInt64(s3) << 48 | UInt64(s2) << 32 | UInt64(s1) << 16 | UInt64(s0)
     }
 
     var score: Int {
@@ -179,13 +195,13 @@ struct MatchedItem: Sendable {
         offset: Int, length: Int,
         matchResult: MatchResult, scheme: SortScheme,
         allBytes: UnsafeBufferPointer<UInt8>
-    ) -> (UInt16, UInt16, UInt16, UInt16) {
+    ) -> UInt64 {
         let maxU16 = Int(UInt16.max)
 
-        // --- byScore (points[3]) ---  higher score → lower value  (always active)
+        // --- byScore (bits 48…63) ---  higher score → lower value  (always active)
         let byScore = UInt16(clamping: maxU16 - matchResult.score)
 
-        // --- byPathname (points[2]) ---  path scheme only
+        // --- byPathname (bits 32…47) ---  path scheme only
         // Find the last path separator at or before the match start.
         // a match right after a '/' (distance 1) ranks above one mid-segment.
         let byPathname: UInt16
@@ -204,7 +220,7 @@ struct MatchedItem: Sendable {
             byPathname = 0
         }
 
-        // --- byLength (points[1]) ---  default & path schemes only
+        // --- byLength (bits 16…31) ---  default & path schemes only
         let byLength: UInt16
         if case .history = scheme {
             byLength = 0
@@ -212,18 +228,13 @@ struct MatchedItem: Sendable {
             byLength = UInt16(clamping: length)
         }
 
-        return (0, byLength, byPathname, byScore)
+        return packPoints(0, byLength, byPathname, byScore)
     }
 }
 
-/// Compare two MatchedItems by their rank points.
-/// Returns true when `a` should sort before `b` (i.e. `a` is more relevant).
-/// Walks points[3]…points[0]; lower value wins at each level.
-/// Ties broken by original insertion order (item.index ascending).
+/// Compare two MatchedItems by their packed rank key.
+/// Single UInt64 comparison covers all four priority levels;
+/// ties broken by original insertion order (item.index ascending).
 func rankLessThan(_ a: MatchedItem, _ b: MatchedItem) -> Bool {
-    if a.points.3 != b.points.3 { return a.points.3 < b.points.3 }
-    if a.points.2 != b.points.2 { return a.points.2 < b.points.2 }
-    if a.points.1 != b.points.1 { return a.points.1 < b.points.1 }
-    if a.points.0 != b.points.0 { return a.points.0 < b.points.0 }
-    return a.item.index < b.item.index
+    a.points != b.points ? a.points < b.points : a.item.index < b.item.index
 }

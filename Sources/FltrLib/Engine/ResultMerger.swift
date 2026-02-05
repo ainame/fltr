@@ -68,7 +68,7 @@ enum ResultMerger: Sendable {
             guard idx >= 0, idx < cl.count else { return nil }
             guard let item = cl[idx] else { return nil }
             return MatchedItem(item: item, matchResult: MatchResult(score: 0, positions: []),
-                               points: (0, UInt16(clamping: Int(item.length)), 0, UInt16.max))
+                               points: MatchedItem.packPoints(0, UInt16(clamping: Int(item.length)), 0, UInt16.max))
 
         case .partitionBacked(var state):
             guard idx >= 0, idx < state.count else { return nil }
@@ -93,7 +93,7 @@ enum ResultMerger: Sendable {
             for i in clampedLo..<clampedHi {
                 if let item = cl[i] {
                     result.append(MatchedItem(item: item, matchResult: emptyResult,
-                                             points: (0, UInt16(clamping: Int(item.length)), 0, UInt16.max)))
+                                             points: MatchedItem.packPoints(0, UInt16(clamping: Int(item.length)), 0, UInt16.max)))
                 }
             }
             return result
