@@ -2,9 +2,9 @@ import Foundation
 import TUI
 import AsyncAlgorithms
 
-/// Query update message for matching
-/// Lightweight - only contains current query
-/// Don't capture previousQuery here - read fresh from actor to avoid staleness
+/// Single-field message yielded into the debounced query stream.
+/// previousQuery is intentionally absent — it is read fresh from the actor
+/// at the point of consumption to avoid staleness.
 struct QueryUpdate: Sendable {
     let query: String
 }
@@ -29,34 +29,22 @@ actor UIController {
     private var previewScrollOffset: Int = 0  // Scroll offset for preview content
     private let multiSelect: Bool  // Whether Tab selection is enabled
 
-    // Preview window bounds for mouse hit testing (1-indexed, inclusive)
-    private var previewBounds: PreviewBounds?
-
-    // Preview manager
+    private var previewBounds: PreviewBounds?  // mouse hit-testing (1-indexed, inclusive)
     private let previewManager: PreviewManager?
-
-    // UI renderer
     private let renderer: UIRenderer
-
-    // Input handler
     private let inputHandler: InputHandler
 
-    // Debounce support with AsyncSequence
-    private let debounceDelay: Duration  // Delay before executing match after typing
+    // Debounced query stream feeds runMatch; the continuation is the write end.
+    private let debounceDelay: Duration
     private let queryUpdateStream: AsyncStream<QueryUpdate>
     private let queryUpdateContinuation: AsyncStream<QueryUpdate>.Continuation
 
-    // Current matching task - can be cancelled when new input arrives
+    // Cancellable background tasks
     private var currentMatchTask: Task<Void, Never>?
-
-    // Preview update task - can be cancelled when selection changes
     private var currentPreviewTask: Task<Void, Never>?
+    private var fetchItemsTask: Task<Void, Never>?
 
-    // Background task for fetching new items
-    private var fetchItemsTask: Task<[Item], Never>?
-
-    // Pending render flag - ensures we don't queue up multiple renders
-    private var renderScheduled = false
+    private var renderScheduled = false  // coalesces concurrent render requests
 
     // Merger-level result cache (mirrors fzf's mergerCache).
     // Keyed on (pattern, itemCount).  Invalidated whenever allItems changes.
@@ -87,26 +75,19 @@ actor UIController {
         self.multiSelect = multiSelect
         self.previewCommand = previewCommand
         self.useFloatingPreview = useFloatingPreview
-        // Split preview starts enabled if we have a preview command and not using floating mode
         self.showSplitPreview = previewCommand != nil && !useFloatingPreview
         self.debounceDelay = debounceDelay
 
-        // Initialize preview manager if preview command is provided
         self.previewManager = previewCommand != nil
             ? PreviewManager(command: previewCommand, useFloatingPreview: useFloatingPreview)
             : nil
-
-        // Initialize UI renderer
         self.renderer = UIRenderer(maxHeight: maxHeight, multiSelect: multiSelect)
-
-        // Initialize input handler
         self.inputHandler = InputHandler(
             multiSelect: multiSelect,
             hasPreview: previewCommand != nil,
             useFloatingPreview: useFloatingPreview
         )
 
-        // Create AsyncStream for query changes
         var continuation: AsyncStream<QueryUpdate>.Continuation!
         let stream = AsyncStream<QueryUpdate> { continuation = $0 }
         self.queryUpdateStream = stream
@@ -117,107 +98,43 @@ actor UIController {
     func run() async throws -> [Item] {
         try await terminal.enterRawMode()
 
-        // Note: Terminal cleanup is guaranteed by RawTerminal's deinit,
-        // but we explicitly call exitRawMode() for proper cleanup
-        // Initial load (might be empty if stdin is slow)
+        // Initial snapshot — may be empty if stdin is still streaming.
         let initialChunkList = await cache.snapshotChunkList()
         lastItemCount = initialChunkList.count
         state.totalItems = initialChunkList.count
         let initialMatches = await engine.matchChunksParallel(pattern: "", chunkList: initialChunkList, cache: chunkCache, buffer: textBuffer)
         state.updateMatches(initialMatches)
 
-        await updatePreview()
+        refreshPreview()
         await render()
 
         var lastRefresh = Date()
         let refreshInterval: TimeInterval = 0.1  // Refresh every 100ms when new items arrive
 
-        // Start debounced query update task
-        // This task runs matching OUTSIDE the actor to avoid blocking input
-        let debounceTask = Task { [engine, chunkCache, previewCommand, previewManager, textBuffer] in
+        // Debounced matching runs OUTSIDE the actor so it never blocks input.
+        // Each iteration waits for the previous match to finish (so that
+        // state.merger is up-to-date for incremental filtering), then fires
+        // a new detached task that does the heavy work.
+        let debounceTask = Task {
             for await update in queryUpdateStream.debounce(for: debounceDelay) {
-                // Wait for previous task to complete before starting new one
-                // This ensures state.merger has the latest results for incremental filtering
                 if let prevTask = currentMatchTask {
                     _ = await prevTask.value
                 }
 
-                // Now capture state - previous task has updated merger
-                let previousQuerySnapshot = self.state.previousQuery
-                let currentMergerSnapshot = self.state.merger
-                let chunkListSnapshot = await self.cache.snapshotChunkList()
-
-                // Update previousQuery for next iteration
+                // Snapshot actor state while we still have isolation.
+                let previousQuery  = self.state.previousQuery
+                let currentMerger  = self.state.merger
+                let chunkList      = await self.cache.snapshotChunkList()
                 self.updatePreviousQuery(update.query)
 
-                // Run matching completely outside the actor (nonisolated)
                 currentMatchTask = Task.detached {
-                    let overallStart = Date()
-
-                    // Use previousQuery snapshot from before Task.detached
-                    let previousQuery = previousQuerySnapshot
-
-                    // Incremental filtering: when the new query extends the
-                    // previous one the previous match set is a strict superset —
-                    // no cap exists, so narrowing is lossless.
-                    let canUseIncremental = !previousQuery.isEmpty &&
-                                           update.query.hasPrefix(previousQuery) &&
-                                           update.query.count > previousQuery.count
-
-                    // Merger cache: on the full-search path, check whether we
-                    // already have results for this exact (pattern, itemCount).
-                    // Skip the cache on the incremental path — the candidate set
-                    // is a subset and would produce a different result set.
-                    let results: ResultMerger
-                    if !canUseIncremental, let cached = await self.lookupMergerCache(pattern: update.query, itemCount: chunkListSnapshot.count) {
-                        results = cached
-                    } else {
-                        let matchStart = Date()
-                        let matchedResults: ResultMerger
-                        if canUseIncremental {
-                            // Incremental path: candidate set is a flat [Item] from previous results
-                            let searchItems = currentMergerSnapshot.allItems()
-                            matchedResults = await engine.matchItemsParallel(pattern: update.query, items: searchItems, buffer: textBuffer)
-                        } else {
-                            // Full-search path: use per-chunk cache for keystroke-2+ speed
-                            matchedResults = await engine.matchChunksParallel(pattern: update.query, chunkList: chunkListSnapshot, cache: chunkCache, buffer: textBuffer)
-                        }
-                        let matchTime = Date().timeIntervalSince(matchStart) * 1000
-                        let totalTime = Date().timeIntervalSince(overallStart) * 1000
-
-                        // Diagnostic output to log file
-                        if matchTime > 10 {
-                            let logMsg = "[\(update.query)] match: \(String(format: "%.1f", matchTime))ms (\(chunkListSnapshot.count) items → \(matchedResults.count) results), total: \(String(format: "%.1f", totalTime))ms\n"
-                            if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: "/tmp/fltr-perf.log")) {
-                                handle.seekToEndOfFile()
-                                handle.write(logMsg.data(using: .utf8)!)
-                                try? handle.close()
-                            } else {
-                                try? logMsg.data(using: .utf8)?.write(to: URL(fileURLWithPath: "/tmp/fltr-perf.log"))
-                            }
-                        }
-
-                        // Store in merger cache only on the full-search path
-                        if !canUseIncremental {
-                            await self.storeMergerCache(pattern: update.query, itemCount: chunkListSnapshot.count, results: matchedResults)
-                        }
-                        results = matchedResults
-                    }
-
-                    // Update actor state with results (quick actor call)
-                    await self.applyMatchResults(results)
-
-                    // Update preview if needed (in background)
-                    if previewCommand != nil, let manager = previewManager, results.count > 0 {
-                        await self.updatePreviewAsync(manager: manager, command: previewCommand!)
-                    }
-
-                    // Render the updated UI
-                    await self.render()
+                    await self.runMatch(
+                        query: update.query,
+                        previousQuery: previousQuery,
+                        merger: currentMerger,
+                        chunkList: chunkList
+                    )
                 }
-
-                // Don't wait for completion - let it run in background
-                // It will be cancelled if new input arrives
             }
         }
 
@@ -230,62 +147,40 @@ actor UIController {
                 break
             }
 
-            // Update reading status cache
             isReadingStdin = await !reader.readingComplete()
 
             if let byte = await terminal.readByte() {
                 await handleKey(byte: byte)
-                scheduleRender()  // Non-blocking render
+                scheduleRender()
             } else {
-                // No keyboard input - check if new items arrived
                 let currentCount = await cache.count()
 
                 if currentCount > lastItemCount {
-                    // New items arrived! Update if enough time passed
                     let now = Date()
                     if now.timeIntervalSince(lastRefresh) >= refreshInterval {
-                        // Update count immediately
                         lastItemCount = currentCount
                         state.totalItems = currentCount
 
-                        // Cancel any previous tasks
                         fetchItemsTask?.cancel()
                         currentMatchTask?.cancel()
 
-                        // Fetch chunk-list snapshot and re-match in background (doesn't block input!)
-                        fetchItemsTask = Task.detached { [cache, engine, chunkCache, previewCommand, previewManager, textBuffer] in
-                            let chunkListSnapshot = await cache.snapshotChunkList()
+                        // Re-match against the fresh item set in the background.
+                        // Always a full search: previousQuery is owned by the
+                        // debounce task; writing it here would let the debounce
+                        // path see a stale value and permanently cap its results.
+                        fetchItemsTask = Task.detached {
+                            let chunkList = await self.cache.snapshotChunkList()
+                            let query     = await self.state.query
 
-                            let query = await self.state.query
-
-                            // Item count changed → invalidate stale caches before matching
                             await self.invalidateMergerCache()
-                            chunkCache.clear()
+                            self.chunkCache.clear()
 
-                            // Always do a full search against the fresh item set.
-                            // Do NOT use incremental filtering here: previousQuery is
-                            // owned by the debounce task.  Writing it from fetchItemsTask
-                            // causes a race where the debounce path sees a stale
-                            // previousQuery (e.g. "j" while the user typed "json") and
-                            // incorrectly narrows its candidate set to the top-N matches
-                            // of that earlier query, capping results permanently.
-                            let results = await engine.matchChunksParallel(pattern: query, chunkList: chunkListSnapshot, cache: chunkCache, buffer: textBuffer)
-
-                            // Cache the fresh full-search results
-                            await self.storeMergerCache(pattern: query, itemCount: chunkListSnapshot.count, results: results)
-
-                            // Update state
-                            await self.applyMatchResults(results)
-
-                            // Update preview if needed
-                            if previewCommand != nil, let manager = previewManager, results.count > 0 {
-                                await self.updatePreviewAsync(manager: manager, command: previewCommand!)
-                            }
-
-                            // Render
-                            await self.render()
-
-                            return []  // fetchItemsTask signature kept for cancellation tracking
+                            await self.runMatch(
+                                query: query,
+                                previousQuery: "",  // force full search
+                                merger: .empty,
+                                chunkList: chunkList
+                            )
                         }
 
                         lastRefresh = now
@@ -306,30 +201,24 @@ actor UIController {
         // ttyFd is closed, and spill the entire UI frame onto stdout.
         isExiting = true
 
-        // Clean up tasks
         queryUpdateContinuation.finish()
         currentMatchTask?.cancel()
         currentPreviewTask?.cancel()
         fetchItemsTask?.cancel()
         debounceTask.cancel()
 
-        // Exit raw mode synchronously before returning to ensure terminal is restored
-        // before any output is written to stdout
         await terminal.exitRawMode()
 
         return state.getSelectedItems()
     }
 
     private func handleKey(byte: UInt8) async {
-        // Calculate visible height for scrolling
         let (rows, _) = (try? await terminal.getSize()) ?? (24, 80)
-        let availableRows = rows - 4  // Account for input, border, status, and spacing
+        let availableRows = rows - 4  // input + border + status + spacing
         let visibleHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
 
-        // Parse key using InputHandler
         let key = await inputHandler.parseEscapeSequence(firstByte: byte, terminal: terminal)
 
-        // Create input context
         let context = InputContext(
             visibleHeight: visibleHeight,
             cachedPreview: cachedPreview,
@@ -340,7 +229,6 @@ actor UIController {
         // Handle key event
         let action = inputHandler.handleKeyEvent(key: key, state: &state, context: context)
 
-        // Execute action
         switch action {
         case .none:
             break
@@ -349,16 +237,7 @@ actor UIController {
             scheduleMatchUpdate()
 
         case .updatePreview:
-            // Cancel previous preview task
-            currentPreviewTask?.cancel()
-
-            // Update preview in background (don't block input)
-            if let manager = previewManager, let command = previewCommand {
-                currentPreviewTask = Task.detached {
-                    await self.updatePreviewAsync(manager: manager, command: command)
-                    await self.render()
-                }
-            }
+            refreshPreview()
 
         case .updatePreviewScroll(let offset):
             previewScrollOffset = offset
@@ -366,50 +245,39 @@ actor UIController {
         case .togglePreview:
             if useFloatingPreview {
                 showFloatingPreview.toggle()
-                if showFloatingPreview {
-                    currentPreviewTask?.cancel()
-                    if let manager = previewManager, let command = previewCommand {
-                        currentPreviewTask = Task.detached {
-                            await self.updatePreviewAsync(manager: manager, command: command)
-                            await self.render()
-                        }
-                    }
-                }
+                if showFloatingPreview { refreshPreview() }
             } else {
                 showSplitPreview.toggle()
-                if showSplitPreview {
-                    currentPreviewTask?.cancel()
-                    if let manager = previewManager, let command = previewCommand {
-                        currentPreviewTask = Task.detached {
-                            await self.updatePreviewAsync(manager: manager, command: command)
-                            await self.render()
-                        }
-                    }
-                }
+                if showSplitPreview { refreshPreview() }
             }
         }
     }
 
-    /// Emit query change event to debounced stream
-    /// Only sends current query - previousQuery read fresh to avoid staleness
     private func scheduleMatchUpdate() {
         let update = QueryUpdate(query: state.query)
         queryUpdateContinuation.yield(update)
     }
 
-    /// Update previousQuery to prevent race conditions in incremental filtering
+    /// Cancel any in-flight preview and kick off a fresh one in the background.
+    /// Every call site that needs a new preview reduces to this single path.
+    private func refreshPreview() {
+        guard let manager = previewManager, let command = previewCommand else { return }
+        currentPreviewTask?.cancel()
+        currentPreviewTask = Task.detached {
+            await self.updatePreviewAsync(manager: manager, command: command)
+            await self.render()
+        }
+    }
+
     private func updatePreviousQuery(_ query: String) {
         state.previousQuery = query
     }
 
-    /// Apply match results to state (actor-isolated, fast)
-    /// Note: previousQuery is updated before matching starts to prevent race conditions
     private func applyMatchResults(_ results: ResultMerger) {
         guard !isExiting else { return }
         state.updateMatches(results)
     }
 
-    /// Update preview asynchronously in background
     private func updatePreviewAsync(manager: PreviewManager, command: String) async {
         guard let selectedItem = state.merger.get(state.selectedIndex) else {
             cachedPreview = ""
@@ -418,9 +286,7 @@ actor UIController {
         }
 
         let newPreview = await manager.executeCommand(command, item: selectedItem.item.text(in: textBuffer))
-
-        // Update cached preview (actor-isolated)
-        self.setCachedPreview(newPreview)
+        setCachedPreview(newPreview)
     }
 
     private func setCachedPreview(_ preview: String) {
@@ -430,8 +296,6 @@ actor UIController {
         cachedPreview = preview
     }
 
-    /// Schedule a render without blocking (fire and forget)
-    /// Only schedules if no render is already pending to avoid queueing
     private func scheduleRender() {
         guard !renderScheduled else { return }
         renderScheduled = true
@@ -439,6 +303,80 @@ actor UIController {
         Task {
             await render()
             renderScheduled = false
+        }
+    }
+
+    // MARK: - Matching
+
+    /// Core match loop: determine whether to use the incremental or full-search
+    /// path, consult / populate the merger cache, then apply results and render.
+    /// Called from detached tasks; everything that touches actor state goes
+    /// through `await self.*` helper calls.
+    nonisolated private func runMatch(
+        query: String,
+        previousQuery: String,
+        merger: ResultMerger,
+        chunkList: ChunkList
+    ) async {
+        let overallStart = Date()
+
+        // Incremental filtering: when the new query extends the previous one
+        // the previous match set is a strict superset, so narrowing is lossless.
+        let canUseIncremental = !previousQuery.isEmpty &&
+                                query.hasPrefix(previousQuery) &&
+                                query.count > previousQuery.count
+
+        // Merger cache hit — only valid on the full-search path (the
+        // incremental candidate set is a subset and would differ).
+        if !canUseIncremental, let cached = await lookupMergerCache(pattern: query, itemCount: chunkList.count) {
+            await applyMatchResults(cached)
+            await refreshPreviewIfNeeded(results: cached)
+            await render()
+            return
+        }
+
+        let matchStart = Date()
+        let results: ResultMerger
+        if canUseIncremental {
+            results = await engine.matchItemsParallel(pattern: query, items: merger.allItems(), buffer: textBuffer)
+        } else {
+            results = await engine.matchChunksParallel(pattern: query, chunkList: chunkList, cache: chunkCache, buffer: textBuffer)
+        }
+
+        logMatchTime(
+            query: query,
+            matchTime: Date().timeIntervalSince(matchStart) * 1000,
+            totalTime: Date().timeIntervalSince(overallStart) * 1000,
+            itemCount: chunkList.count,
+            resultCount: results.count
+        )
+
+        if !canUseIncremental {
+            await storeMergerCache(pattern: query, itemCount: chunkList.count, results: results)
+        }
+
+        await applyMatchResults(results)
+        await refreshPreviewIfNeeded(results: results)
+        await render()
+    }
+
+    /// Update the cached preview when there are results to show.
+    nonisolated private func refreshPreviewIfNeeded(results: ResultMerger) async {
+        guard results.count > 0, let manager = previewManager, let command = previewCommand else { return }
+        await updatePreviewAsync(manager: manager, command: command)
+    }
+
+    /// Append a single perf-log line when a match round takes > 10 ms.
+    private nonisolated func logMatchTime(query: String, matchTime: Double, totalTime: Double, itemCount: Int, resultCount: Int) {
+        guard matchTime > 10 else { return }
+        let msg = "[\(query)] match: \(String(format: "%.1f", matchTime))ms (\(itemCount) items → \(resultCount) results), total: \(String(format: "%.1f", totalTime))ms\n"
+        let path = URL(fileURLWithPath: "/tmp/fltr-perf.log")
+        if let handle = try? FileHandle(forWritingTo: path) {
+            handle.seekToEndOfFile()
+            handle.write(msg.data(using: .utf8)!)
+            try? handle.close()
+        } else {
+            try? msg.data(using: .utf8)?.write(to: path)
         }
     }
 
@@ -460,7 +398,6 @@ actor UIController {
         mergerCacheItemCount = itemCount
     }
 
-    /// Invalidate the merger cache (called whenever allItems is refreshed).
     private func invalidateMergerCache() {
         mergerCachePattern = ""
         mergerCacheResults = .empty
@@ -470,30 +407,24 @@ actor UIController {
     private func render() async {
         guard !isExiting else { return }
         let rawSize = (try? await terminal.getSize()) ?? (24, 80)
-        let rows = max(5, rawSize.0)   // minimum viable layout height
-        let cols = max(10, rawSize.1)  // minimum viable layout width
+        let rows = max(5, rawSize.0)
+        let cols = max(10, rawSize.1)
 
-        // Calculate available rows for items
-        // Layout: row 1 = input, row 2 = border, rows 3..N = items, row N+1 = status
-        let availableRows = rows - 4  // 1 for input, 1 for border, 1 for status, 1 for spacing
+        // Layout: input | border | items… | status  →  4 rows of chrome
+        let availableRows = rows - 4
         let displayHeight = maxHeight.map { min($0, availableRows) } ?? availableRows
 
-        // Calculate layout based on preview mode
         let previewWidth: Int
         let previewStartCol: Int
-
         if showSplitPreview {
-            // Split-screen: 50/50 layout with vertical separator
             let listWidth = cols / 2 - 1
             previewWidth = cols - listWidth - 1
             previewStartCol = listWidth + 2
         } else {
-            // Full width for list
             previewWidth = 0
             previewStartCol = 0
         }
 
-        // Create render context
         let context = RenderContext(
             rows: rows,
             cols: cols,
@@ -502,33 +433,17 @@ actor UIController {
             showFloatingPreview: showFloatingPreview
         )
 
-        // Materialise the visible window from the merger before assembling the
-        // frame.  assembleFrame receives state by value so it cannot call
-        // mutating Merger methods itself.
+        // Materialise the visible window here; assembleFrame receives state
+        // by value and cannot call mutating Merger methods itself.
         let visibleItems = state.merger.slice(state.scrollOffset, state.scrollOffset + displayHeight)
-
-        // Build entire frame in a single buffer to minimize actor calls
         var buffer = renderer.assembleFrame(state: state, visibleItems: visibleItems, context: context, buffer: textBuffer)
 
-        // Render split preview if enabled
         if showSplitPreview {
             let startRow = 3
             let endRow = displayHeight + 2
-            // Store bounds for mouse hit testing (inclusive)
-            previewBounds = PreviewBounds(
-                startRow: startRow,
-                endRow: endRow,
-                startCol: previewStartCol,
-                endCol: cols
-            )
-            buffer += renderSplitPreview(
-                startRow: startRow,
-                endRow: endRow,
-                startCol: previewStartCol,
-                width: previewWidth
-            )
+            previewBounds = PreviewBounds(startRow: startRow, endRow: endRow, startCol: previewStartCol, endCol: cols)
+            buffer += renderSplitPreview(startRow: startRow, endRow: endRow, startCol: previewStartCol, width: previewWidth)
         } else if showFloatingPreview {
-            // Render floating preview window if enabled
             let (floatingBounds, floatingBuffer) = renderFloatingPreview(rows: rows, cols: cols)
             previewBounds = floatingBounds
             buffer += floatingBuffer
@@ -536,31 +451,10 @@ actor UIController {
             previewBounds = nil
         }
 
-        // Single write for entire frame
         await terminal.write(buffer)
         await terminal.flush()
     }
 
-    /// Update preview for currently selected item
-    private func updatePreview() async {
-        guard let manager = previewManager, let command = previewCommand else { return }
-        guard let selectedItem = state.merger.get(state.selectedIndex) else {
-            cachedPreview = ""
-            previewScrollOffset = 0
-            return
-        }
-
-        let newPreview = await manager.executeCommand(command, item: selectedItem.item.text(in: textBuffer))
-
-        // Reset scroll offset when preview content changes (new item selected)
-        if newPreview != cachedPreview {
-            previewScrollOffset = 0
-        }
-
-        cachedPreview = newPreview
-    }
-
-    /// Render split-screen preview using PreviewManager
     private func renderSplitPreview(startRow: Int, endRow: Int, startCol: Int, width: Int) -> String {
         guard let manager = previewManager else { return "" }
         return manager.renderSplitPreview(
@@ -573,7 +467,6 @@ actor UIController {
         )
     }
 
-    /// Render floating window using PreviewManager
     private func renderFloatingPreview(rows: Int, cols: Int) -> (PreviewBounds?, String) {
         guard showFloatingPreview, let manager = previewManager else { return (nil, "") }
 
