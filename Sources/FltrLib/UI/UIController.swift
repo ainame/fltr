@@ -15,6 +15,7 @@ actor UIController {
     private let matcher: FuzzyMatcher
     private let engine: MatchingEngine
     private let cache: ItemCache
+    private let textBuffer: TextBuffer  // captured once; ItemCache.buffer is a let
     private let reader: StdinReader
     private var state = UIState()
     private var maxHeight: Int?  // nil = use full terminal height
@@ -80,6 +81,7 @@ actor UIController {
         self.matcher = matcher
         self.engine = MatchingEngine(matcher: matcher)
         self.cache = cache
+        self.textBuffer = cache.buffer
         self.reader = reader
         self.maxHeight = maxHeight
         self.multiSelect = multiSelect
@@ -121,7 +123,7 @@ actor UIController {
         let initialChunkList = await cache.snapshotChunkList()
         lastItemCount = initialChunkList.count
         state.totalItems = initialChunkList.count
-        let initialMatches = await engine.matchChunksParallel(pattern: "", chunkList: initialChunkList, cache: chunkCache)
+        let initialMatches = await engine.matchChunksParallel(pattern: "", chunkList: initialChunkList, cache: chunkCache, buffer: textBuffer)
         state.updateMatches(initialMatches)
 
         await updatePreview()
@@ -132,7 +134,7 @@ actor UIController {
 
         // Start debounced query update task
         // This task runs matching OUTSIDE the actor to avoid blocking input
-        let debounceTask = Task { [engine, chunkCache, previewCommand, previewManager] in
+        let debounceTask = Task { [engine, chunkCache, previewCommand, previewManager, textBuffer] in
             for await update in queryUpdateStream.debounce(for: debounceDelay) {
                 // Wait for previous task to complete before starting new one
                 // This ensures state.merger has the latest results for incremental filtering
@@ -175,10 +177,10 @@ actor UIController {
                         if canUseIncremental {
                             // Incremental path: candidate set is a flat [Item] from previous results
                             let searchItems = currentMergerSnapshot.allItems()
-                            matchedResults = await engine.matchItemsParallel(pattern: update.query, items: searchItems)
+                            matchedResults = await engine.matchItemsParallel(pattern: update.query, items: searchItems, buffer: textBuffer)
                         } else {
                             // Full-search path: use per-chunk cache for keystroke-2+ speed
-                            matchedResults = await engine.matchChunksParallel(pattern: update.query, chunkList: chunkListSnapshot, cache: chunkCache)
+                            matchedResults = await engine.matchChunksParallel(pattern: update.query, chunkList: chunkListSnapshot, cache: chunkCache, buffer: textBuffer)
                         }
                         let matchTime = Date().timeIntervalSince(matchStart) * 1000
                         let totalTime = Date().timeIntervalSince(overallStart) * 1000
@@ -251,7 +253,7 @@ actor UIController {
                         currentMatchTask?.cancel()
 
                         // Fetch chunk-list snapshot and re-match in background (doesn't block input!)
-                        fetchItemsTask = Task.detached { [cache, engine, chunkCache, previewCommand, previewManager] in
+                        fetchItemsTask = Task.detached { [cache, engine, chunkCache, previewCommand, previewManager, textBuffer] in
                             let chunkListSnapshot = await cache.snapshotChunkList()
 
                             let query = await self.state.query
@@ -267,7 +269,7 @@ actor UIController {
                             // previousQuery (e.g. "j" while the user typed "json") and
                             // incorrectly narrows its candidate set to the top-N matches
                             // of that earlier query, capping results permanently.
-                            let results = await engine.matchChunksParallel(pattern: query, chunkList: chunkListSnapshot, cache: chunkCache)
+                            let results = await engine.matchChunksParallel(pattern: query, chunkList: chunkListSnapshot, cache: chunkCache, buffer: textBuffer)
 
                             // Cache the fresh full-search results
                             await self.storeMergerCache(pattern: query, itemCount: chunkListSnapshot.count, results: results)
@@ -415,7 +417,7 @@ actor UIController {
             return
         }
 
-        let newPreview = await manager.executeCommand(command, item: selectedItem.item.text)
+        let newPreview = await manager.executeCommand(command, item: selectedItem.item.text(in: textBuffer))
 
         // Update cached preview (actor-isolated)
         self.setCachedPreview(newPreview)
@@ -506,7 +508,7 @@ actor UIController {
         let visibleItems = state.merger.slice(state.scrollOffset, state.scrollOffset + displayHeight)
 
         // Build entire frame in a single buffer to minimize actor calls
-        var buffer = renderer.assembleFrame(state: state, visibleItems: visibleItems, context: context)
+        var buffer = renderer.assembleFrame(state: state, visibleItems: visibleItems, context: context, buffer: textBuffer)
 
         // Render split preview if enabled
         if showSplitPreview {
@@ -548,7 +550,7 @@ actor UIController {
             return
         }
 
-        let newPreview = await manager.executeCommand(command, item: selectedItem.item.text)
+        let newPreview = await manager.executeCommand(command, item: selectedItem.item.text(in: textBuffer))
 
         // Reset scroll offset when preview content changes (new item selected)
         if newPreview != cachedPreview {
@@ -575,7 +577,7 @@ actor UIController {
     private func renderFloatingPreview(rows: Int, cols: Int) -> (PreviewBounds?, String) {
         guard showFloatingPreview, let manager = previewManager else { return (nil, "") }
 
-        let itemName = state.merger.get(state.selectedIndex)?.item.text ?? ""
+        let itemName = state.merger.get(state.selectedIndex).map { $0.item.text(in: textBuffer) } ?? ""
 
         return manager.renderFloatingPreview(
             content: cachedPreview,

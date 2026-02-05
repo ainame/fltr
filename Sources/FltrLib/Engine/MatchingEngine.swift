@@ -15,22 +15,23 @@ struct MatchingEngine: Sendable {
     /// Each partition is sorted locally; the caller merges lazily via ResultMerger.
     ///
     /// *items* is a flat ``[Item]`` — used on the incremental-filter path where the
-    /// candidate set was extracted from a previous merger.  All Items share the same
-    /// ``TextBuffer``, so each task opens it independently via ``withBytes``.
-    func matchItemsParallel(pattern: String, items: [Item]) async -> ResultMerger {
+    /// candidate set was extracted from a previous merger.  *buffer* is the shared
+    /// ``TextBuffer``; each task opens it independently via ``withBytes``.
+    func matchItemsParallel(pattern: String, items: [Item], buffer: TextBuffer) async -> ResultMerger {
         guard !pattern.isEmpty else {
-            // For the flat-item path we cannot avoid wrapping because the caller
-            // expects a partition-backed merger it can re-score later.  But this
-            // path only fires on incremental filter (previous results ≪ total),
-            // so the allocation is small.
-            let all = items.map { MatchedItem(item: $0, matchResult: MatchResult(score: 0, positions: [])) }
+            // Score = 0, positions empty → points are (0, byLength, 0, maxU16).
+            // Synthesise without opening the buffer.
+            let emptyResult = MatchResult(score: 0, positions: [])
+            let all = items.map { item in
+                MatchedItem(item: item, matchResult: emptyResult,
+                            points: (0, UInt16(clamping: Int(item.length)), 0, UInt16.max))
+            }
             return ResultMerger(partitions: [all])
         }
 
         // Small dataset - use single-threaded with buffer reuse
         if items.count < parallelThreshold {
-            guard let buf = items.first?.buffer else { return .empty }
-            let results = buf.withBytes { allBytes in
+            let results = buffer.withBytes { allBytes in
                 Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
                     matchItemsFromBuffer(pattern: pattern, items: items, allBytes: allBytes)
                 }
@@ -41,14 +42,13 @@ struct MatchingEngine: Sendable {
         // Parallel matching for large datasets
         let cpuCount = ProcessInfo.processInfo.activeProcessorCount
         let partitionSize = max(100, items.count / cpuCount)
-        guard let buf = items.first?.buffer else { return .empty }
 
         return await withTaskGroup(of: [MatchedItem].self) { group in
             for partition in items.chunked(into: partitionSize) {
                 group.addTask {
                     guard !Task.isCancelled else { return [] }
 
-                    return buf.withBytes { allBytes in
+                    return buffer.withBytes { allBytes in
                         Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
                             self.matchItemsFromBuffer(pattern: pattern, items: partition, allBytes: allBytes)
                         }
@@ -77,7 +77,7 @@ struct MatchingEngine: Sendable {
     ///   4. Store result if selectivity gate passes (count ≤ queryCacheMax).
     ///
     /// Parallelisation and cancellation logic mirrors ``matchItemsParallel``.
-    func matchChunksParallel(pattern: String, chunkList: ChunkList, cache: ChunkCache) async -> ResultMerger {
+    func matchChunksParallel(pattern: String, chunkList: ChunkList, cache: ChunkCache, buffer: TextBuffer) async -> ResultMerger {
         guard !pattern.isEmpty else {
             // Zero-allocation fast path: ChunkList in insertion order IS rank order.
             return .fromChunkList(chunkList)
@@ -85,10 +85,6 @@ struct MatchingEngine: Sendable {
 
         let totalChunks = chunkList.chunkCount
         guard totalChunks > 0 else { return .empty }
-
-        // All items share the same TextBuffer — grab it from the first chunk.
-        guard chunkList.chunk(at: 0).count > 0 else { return .empty }
-        let buffer = chunkList.chunk(at: 0)[0].buffer
 
         let cpuCount = ProcessInfo.processInfo.activeProcessorCount
         let chunksPerPartition = max(1, totalChunks / cpuCount)
@@ -131,7 +127,7 @@ struct MatchingEngine: Sendable {
                                             count: Int(item.length)
                                         )
                                         if let result = self.matcher.match(pattern: pattern, textBuf: slice) {
-                                            chunkResults.append(MatchedItem(item: item, matchResult: result))
+                                            chunkResults.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
                                         }
                                     }
                                 } else {
@@ -143,7 +139,7 @@ struct MatchingEngine: Sendable {
                                             count: Int(item.length)
                                         )
                                         if let result = self.matcher.match(pattern: pattern, textBuf: slice) {
-                                            chunkResults.append(MatchedItem(item: item, matchResult: result))
+                                            chunkResults.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
                                         }
                                     }
                                 }
@@ -189,7 +185,7 @@ struct MatchingEngine: Sendable {
                 count: Int(item.length)
             )
             if let result = matcher.match(pattern: pattern, textBuf: slice) {
-                matched.append(MatchedItem(item: item, matchResult: result))
+                matched.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
             }
         }
         matched.sort(by: rankLessThan)

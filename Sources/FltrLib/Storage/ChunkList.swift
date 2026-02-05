@@ -41,6 +41,18 @@ final class ChunkStore {
     func snapshot() -> ChunkList {
         ChunkList(frozen: frozen, tailSnapshot: tail, totalCount: totalCount)
     }
+
+    /// Seal the tail into frozen and reallocate ``frozen`` at exact capacity.
+    /// Call once after the last append to reclaim Array growth headroom
+    /// (~30 % of the frozen buffer).  No-op if already shrunk.
+    func shrinkToFit() {
+        if tail.count > 0 {
+            frozen.append(tail)
+            tail = Chunk()
+        }
+        guard frozen.capacity > frozen.count else { return }
+        frozen = Array(frozen)
+    }
 }
 
 // MARK: - ChunkList (value-type snapshot)

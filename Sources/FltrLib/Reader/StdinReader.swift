@@ -36,6 +36,7 @@ actor StdinReader {
         // cooperative pool so it cannot starve Swift concurrency.
         return Task.detached {
             await StdinReader.readLoop(cache: self.cache)
+            await self.cache.sealAndShrink()
             await self.finishReading()
         }
     }

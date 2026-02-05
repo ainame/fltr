@@ -149,10 +149,22 @@ struct MatchedItem: Sendable {
     /// Precomputed rank key.  Compare with `rankLessThan(_:_:)`.
     let points: (UInt16, UInt16, UInt16, UInt16)   // [0] … [3]
 
-    init(item: Item, matchResult: MatchResult, scheme: SortScheme = .path) {
+    /// Hot-path init: *allBytes* is the live ``TextBuffer`` pointer (held by the
+    /// caller's ``withBytes`` scope).  No ``String`` allocation.
+    init(item: Item, matchResult: MatchResult, scheme: SortScheme = .path, allBytes: UnsafeBufferPointer<UInt8>) {
         self.item = item
         self.matchResult = matchResult
-        self.points = MatchedItem.buildPoints(text: item.text, matchResult: matchResult, scheme: scheme)
+        self.points = MatchedItem.buildPoints(
+            offset: Int(item.offset), length: Int(item.length),
+            matchResult: matchResult, scheme: scheme, allBytes: allBytes)
+    }
+
+    /// Fast init with pre-computed points — used by the chunkBacked zero-alloc
+    /// path where score is 0, positions are empty, and byPathname is irrelevant.
+    init(item: Item, matchResult: MatchResult, points: (UInt16, UInt16, UInt16, UInt16)) {
+        self.item = item
+        self.matchResult = matchResult
+        self.points = points
     }
 
     var score: Int {
@@ -161,7 +173,13 @@ struct MatchedItem: Sendable {
 
     // MARK: - Rank-point construction  (mirrors fzf result.go : buildResult)
 
-    private static func buildPoints(text: String, matchResult: MatchResult, scheme: SortScheme) -> (UInt16, UInt16, UInt16, UInt16) {
+    /// Zero-copy buildPoints: works directly on the raw byte buffer.
+    @inlinable
+    static func buildPoints(
+        offset: Int, length: Int,
+        matchResult: MatchResult, scheme: SortScheme,
+        allBytes: UnsafeBufferPointer<UInt8>
+    ) -> (UInt16, UInt16, UInt16, UInt16) {
         let maxU16 = Int(UInt16.max)
 
         // --- byScore (points[3]) ---  higher score → lower value  (always active)
@@ -169,23 +187,17 @@ struct MatchedItem: Sendable {
 
         // --- byPathname (points[2]) ---  path scheme only
         // Find the last path separator at or before the match start.
-        // This measures how far into its own path segment the match begins —
         // a match right after a '/' (distance 1) ranks above one mid-segment.
-        // Using the separator immediately before minBegin (rather than the last
-        // separator in the whole string) keeps directory-children like
-        // "../renovate/lib" on equal footing with "../renovate-wrapper" when
-        // both match "renovate" right after a '/'.
         let byPathname: UInt16
         if case .path = scheme {
             let minBegin = matchResult.positions.first ?? 0
             var delimBeforeMatch = -1
-            var idx = 0
-            for ch in text.utf8 {
-                if idx >= minBegin { break }
+            let base = allBytes.baseAddress! + offset
+            for idx in 0..<min(minBegin, length) {
+                let ch = base[idx]
                 if ch == 0x2F || ch == 0x5C {   // '/' or '\'
                     delimBeforeMatch = idx
                 }
-                idx += 1
             }
             byPathname = UInt16(clamping: minBegin - delimBeforeMatch)
         } else {
@@ -193,14 +205,11 @@ struct MatchedItem: Sendable {
         }
 
         // --- byLength (points[1]) ---  default & path schemes only
-        // fzf uses TrimLength (trailing whitespace stripped).  We approximate
-        // with the full UTF-8 byte length; trimming whitespace here would cost
-        // an allocation on every item.
         let byLength: UInt16
         if case .history = scheme {
             byLength = 0
         } else {
-            byLength = UInt16(clamping: text.utf8.count)
+            byLength = UInt16(clamping: length)
         }
 
         return (0, byLength, byPathname, byScore)

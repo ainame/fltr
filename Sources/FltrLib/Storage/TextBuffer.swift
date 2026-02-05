@@ -62,4 +62,12 @@ final class TextBuffer: @unchecked Sendable {
     func withBytes<R>(_ body: (UnsafeBufferPointer<UInt8>) throws -> R) rethrows -> R {
         try bytes.withUnsafeBufferPointer(body)
     }
+
+    /// Reallocate the backing store at exactly ``count`` capacity.
+    /// Call once after the last append (i.e. after stdin EOF) to reclaim the
+    /// ~30 % headroom that Array's doubling growth leaves behind.
+    func shrinkToFit() {
+        guard bytes.capacity > bytes.count else { return }
+        bytes = Array(bytes)
+    }
 }

@@ -7,7 +7,7 @@ struct UIState: Sendable {
     var cursorPosition: Int = 0
     var selectedIndex: Int = 0
     var scrollOffset: Int = 0  // First visible item index
-    var selectedItems: Set<Int> = []
+    var selectedItems: Set<Item.Index> = []
     var merger: ResultMerger = .empty
     var matchCount: Int = 0  // = merger.count; cached so the renderer can read it from a by-value copy
     var totalItems: Int = 0

@@ -67,7 +67,8 @@ enum ResultMerger: Sendable {
         case .chunkBacked(let cl):
             guard idx >= 0, idx < cl.count else { return nil }
             guard let item = cl[idx] else { return nil }
-            return MatchedItem(item: item, matchResult: MatchResult(score: 0, positions: []))
+            return MatchedItem(item: item, matchResult: MatchResult(score: 0, positions: []),
+                               points: (0, UInt16(clamping: Int(item.length)), 0, UInt16.max))
 
         case .partitionBacked(var state):
             guard idx >= 0, idx < state.count else { return nil }
@@ -86,11 +87,13 @@ enum ResultMerger: Sendable {
 
         switch self {
         case .chunkBacked(let cl):
+            let emptyResult = MatchResult(score: 0, positions: [])
             var result = [MatchedItem]()
             result.reserveCapacity(clampedHi - clampedLo)
             for i in clampedLo..<clampedHi {
                 if let item = cl[i] {
-                    result.append(MatchedItem(item: item, matchResult: MatchResult(score: 0, positions: [])))
+                    result.append(MatchedItem(item: item, matchResult: emptyResult,
+                                             points: (0, UInt16(clamping: Int(item.length)), 0, UInt16.max)))
                 }
             }
             return result
@@ -121,7 +124,7 @@ enum ResultMerger: Sendable {
 
     /// Return items whose item.index is in *indices*, sorted by index.
     /// O(n) scan — only called once on exit for multi-select.
-    func selectedItems(indices: Set<Int>) -> [Item] {
+    func selectedItems(indices: Set<Item.Index>) -> [Item] {
         switch self {
         case .chunkBacked(let cl):
             var result = [Item]()

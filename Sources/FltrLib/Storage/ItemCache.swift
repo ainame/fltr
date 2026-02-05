@@ -7,12 +7,12 @@
 /// already has valid bytes behind it.
 actor ItemCache {
     private let store = ChunkStore()
-    let buffer = TextBuffer()
+    nonisolated let buffer = TextBuffer()
 
     func append(_ text: String) {
-        let index = store.totalCount
+        let index = Int32(store.totalCount)
         let (offset, length) = buffer.append(text)
-        let item = Item(index: index, buffer: buffer, offset: offset, length: length)
+        let item = Item(index: index, offset: offset, length: length)
         store.append(item)
     }
 
@@ -20,8 +20,8 @@ actor ItemCache {
     /// The caller must have appended the bytes to ``buffer`` *before* this call;
     /// this ordering guarantees any Item that escapes the actor has valid backing bytes.
     func registerItem(offset: UInt32, length: UInt32) {
-        let index = store.totalCount
-        let item = Item(index: index, buffer: buffer, offset: offset, length: length)
+        let index = Int32(store.totalCount)
+        let item = Item(index: index, offset: offset, length: length)
         store.append(item)
     }
 
@@ -38,5 +38,14 @@ actor ItemCache {
     /// only the current tail chunk (~2.4 KB) is copied.
     func snapshotChunkList() -> ChunkList {
         store.snapshot()
+    }
+
+    /// Reclaim Array growth headroom in both the TextBuffer and the chunk
+    /// store.  Call exactly once after stdin is fully consumed.  The transient
+    /// cost is one extra copy of each buffer at exact size; the old over-sized
+    /// buffer is freed immediately after.
+    func sealAndShrink() {
+        store.shrinkToFit()
+        buffer.shrinkToFit()
     }
 }

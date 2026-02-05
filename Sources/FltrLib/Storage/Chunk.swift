@@ -1,10 +1,5 @@
 import Collections
 
-/// Shared sentinel buffer used only to fill the unused slots in a new Chunk.
-/// Its bytes are never read; it exists solely to satisfy the value-type
-/// initialiser requirement of InlineArray.
-private let _sentinelBuffer = TextBuffer()
-
 /// Fixed-size chunk for efficient storage
 /// Based on fzf's chunk design (100 items per chunk)
 ///
@@ -16,7 +11,8 @@ struct Chunk: Sendable {
     private(set) var count: Int = 0
 
     init() {
-        let dummy = Item(index: -1, buffer: _sentinelBuffer, offset: 0, length: 0)
+        // Dummy value; unused slots are never read (only 0..<count is valid).
+        let dummy = Item(index: -1, offset: 0, length: 0)
         self.storage = .init(repeating: dummy)
     }
 

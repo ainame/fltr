@@ -9,7 +9,7 @@ struct UIRenderer: Sendable {
     /// Assemble complete frame buffer for rendering.
     /// *visibleItems* is the already-sliced window from the caller (UIController
     /// materialises it from the ResultMerger so we never need a mutable merger here).
-    func assembleFrame(state: UIState, visibleItems: [MatchedItem], context: RenderContext) -> String {
+    func assembleFrame(state: UIState, visibleItems: [MatchedItem], context: RenderContext, buffer: TextBuffer) -> String {
         let (rows, cols) = (context.rows, context.cols)
 
         // Calculate available rows for items
@@ -28,29 +28,30 @@ struct UIRenderer: Sendable {
             listWidth = cols
         }
 
-        // Build entire frame in a single buffer to minimize actor calls
-        var buffer = ""
+        // Build entire frame in a single string to minimize actor calls
+        var frame = ""
 
         // Clear screen
-        buffer += "\u{001B}[2J"  // Clear entire screen
+        frame += "\u{001B}[2J"  // Clear entire screen
 
         // Render input line (positions itself) - use full width
-        buffer += renderInputLine(query: state.query, cursorPosition: state.cursorPosition, cols: cols)
+        frame += renderInputLine(query: state.query, cursorPosition: state.cursorPosition, cols: cols)
 
         // Render border line below input - use full width
-        buffer += renderBorderLine(cols: cols)
+        frame += renderBorderLine(cols: cols)
 
         // Render matched items (positions each line)
-        buffer += renderItemList(
+        frame += renderItemList(
             visibleItems: visibleItems,
             selectedIndex: state.selectedIndex,
             selectedItems: state.selectedItems,
             scrollOffset: state.scrollOffset,
-            cols: listWidth
+            cols: listWidth,
+            textBuffer: buffer
         )
 
         // Render status bar (positions itself)
-        buffer += renderStatusBar(
+        frame += renderStatusBar(
             matchedCount: state.matchCount,
             totalItems: state.totalItems,
             selectedItems: state.selectedItems,
@@ -61,7 +62,7 @@ struct UIRenderer: Sendable {
             cols: listWidth
         )
 
-        return buffer
+        return frame
     }
 
     /// Render input line with cursor
@@ -115,9 +116,10 @@ struct UIRenderer: Sendable {
     private func renderItemList(
         visibleItems: [MatchedItem],
         selectedIndex: Int,
-        selectedItems: Set<Int>,
+        selectedItems: Set<Item.Index>,
         scrollOffset: Int,
-        cols: Int
+        cols: Int,
+        textBuffer: TextBuffer
     ) -> String {
         // Pre-define ANSI codes to avoid repeated string allocations
         let swiftOrange = "\u{001B}[1;38;5;202m"
@@ -149,7 +151,7 @@ struct UIRenderer: Sendable {
             let bgStart = isSelected ? bgColor : ""
             let bgEnd = isSelected ? resetAll : ""
 
-            let text = matchedItem.item.text
+            let text = matchedItem.item.text(in: textBuffer)
             let prefixVisualWidth = 2
             let availableWidth = cols - prefixVisualWidth - 1
 
@@ -176,7 +178,7 @@ struct UIRenderer: Sendable {
     private func renderStatusBar(
         matchedCount: Int,
         totalItems: Int,
-        selectedItems: Set<Int>,
+        selectedItems: Set<Item.Index>,
         isReadingStdin: Bool,
         scrollOffset: Int,
         displayHeight: Int,
