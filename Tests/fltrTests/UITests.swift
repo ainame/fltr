@@ -36,7 +36,7 @@ func uiSelectionWithTestTerminal() async throws {
 
     let selected = try await runTask.value
     #expect(selected.count == 1)
-    #expect(selected[0].text == "apricot")
+    #expect(selected[0].text(in: cache.buffer) == "apricot")
 
     let output = await terminal.output
     #expect(output.contains("ap"))
