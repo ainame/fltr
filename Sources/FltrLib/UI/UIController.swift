@@ -21,16 +21,8 @@ actor UIController {
     private var maxHeight: Int?  // nil = use full terminal height
     private var lastItemCount: Int = 0
     private var isReadingStdin: Bool = true  // Cache to avoid async call in render
-    private let previewCommand: String?
-    private let useFloatingPreview: Bool  // true = floating window, false = split-screen
-    private var cachedPreview: String = ""  // Cache to avoid re-running preview on every render
-    private var showFloatingPreview: Bool = false  // Toggle floating preview window (float mode)
-    private var showSplitPreview: Bool  // Toggle split preview (split mode, starts enabled)
-    private var previewScrollOffset: Int = 0  // Scroll offset for preview content
-    private let multiSelect: Bool  // Whether Tab selection is enabled
-
-    private var previewBounds: PreviewBounds?  // mouse hit-testing (1-indexed, inclusive)
-    private let previewManager: PreviewManager?
+    private let multiSelect: Bool
+    private var preview: PreviewState
     private let renderer: UIRenderer
     private let inputHandler: InputHandler
 
@@ -46,17 +38,9 @@ actor UIController {
 
     private var renderScheduled = false  // coalesces concurrent render requests
 
-    // Merger-level result cache (mirrors fzf's mergerCache).
-    // Keyed on (pattern, itemCount).  Invalidated whenever allItems changes.
-    // Only stores results when count <= mergerCacheMax to avoid holding huge
-    // arrays in memory for low-selectivity queries.
-    private var mergerCachePattern: String = ""
-    private var mergerCacheResults: ResultMerger = .empty
-    private var mergerCacheItemCount: Int = 0
-    private static let mergerCacheMax = 100_000
+    private var mergerCache = MergerCache()
 
-    // Per-chunk result cache (mirrors fzf's ChunkCache).
-    // Shared across TaskGroup partitions; internally locked.
+    // Per-chunk result cache shared across TaskGroup partitions; internally locked.
     private let chunkCache = ChunkCache()
 
     // Set to true the moment the exit decision is made.  Guards render() and
@@ -73,14 +57,9 @@ actor UIController {
         self.reader = reader
         self.maxHeight = maxHeight
         self.multiSelect = multiSelect
-        self.previewCommand = previewCommand
-        self.useFloatingPreview = useFloatingPreview
-        self.showSplitPreview = previewCommand != nil && !useFloatingPreview
         self.debounceDelay = debounceDelay
 
-        self.previewManager = previewCommand != nil
-            ? PreviewManager(command: previewCommand, useFloatingPreview: useFloatingPreview)
-            : nil
+        self.preview = PreviewState(command: previewCommand, useFloating: useFloatingPreview)
         self.renderer = UIRenderer(maxHeight: maxHeight, multiSelect: multiSelect)
         self.inputHandler = InputHandler(
             multiSelect: multiSelect,
@@ -221,9 +200,9 @@ actor UIController {
 
         let context = InputContext(
             visibleHeight: visibleHeight,
-            cachedPreview: cachedPreview,
-            previewScrollOffset: previewScrollOffset,
-            previewBounds: previewBounds
+            cachedPreview: preview.cachedPreview,
+            previewScrollOffset: preview.scrollOffset,
+            previewBounds: preview.bounds
         )
 
         // Handle key event
@@ -240,15 +219,15 @@ actor UIController {
             refreshPreview()
 
         case .updatePreviewScroll(let offset):
-            previewScrollOffset = offset
+            preview.scrollOffset = offset
 
         case .togglePreview:
-            if useFloatingPreview {
-                showFloatingPreview.toggle()
-                if showFloatingPreview { refreshPreview() }
+            if preview.useFloating {
+                preview.showFloating.toggle()
+                if preview.showFloating { refreshPreview() }
             } else {
-                showSplitPreview.toggle()
-                if showSplitPreview { refreshPreview() }
+                preview.showSplit.toggle()
+                if preview.showSplit { refreshPreview() }
             }
         }
     }
@@ -261,7 +240,7 @@ actor UIController {
     /// Cancel any in-flight preview and kick off a fresh one in the background.
     /// Every call site that needs a new preview reduces to this single path.
     private func refreshPreview() {
-        guard let manager = previewManager, let command = previewCommand else { return }
+        guard let manager = preview.manager, let command = preview.command else { return }
         currentPreviewTask?.cancel()
         currentPreviewTask = Task.detached {
             await self.updatePreviewAsync(manager: manager, command: command)
@@ -280,20 +259,13 @@ actor UIController {
 
     private func updatePreviewAsync(manager: PreviewManager, command: String) async {
         guard let selectedItem = state.merger.get(state.selectedIndex) else {
-            cachedPreview = ""
-            previewScrollOffset = 0
+            preview.cachedPreview = ""
+            preview.scrollOffset = 0
             return
         }
 
         let newPreview = await manager.executeCommand(command, item: selectedItem.item.text(in: textBuffer))
-        setCachedPreview(newPreview)
-    }
-
-    private func setCachedPreview(_ preview: String) {
-        if preview != cachedPreview {
-            previewScrollOffset = 0
-        }
-        cachedPreview = preview
+        preview.setCached(newPreview)
     }
 
     private func scheduleRender() {
@@ -362,7 +334,13 @@ actor UIController {
 
     /// Update the cached preview when there are results to show.
     nonisolated private func refreshPreviewIfNeeded(results: ResultMerger) async {
-        guard results.count > 0, let manager = previewManager, let command = previewCommand else { return }
+        guard results.count > 0 else { return }
+        await refreshPreviewIfConfigured()
+    }
+
+    /// Actor-isolated gate: only calls updatePreviewAsync when preview is configured.
+    private func refreshPreviewIfConfigured() async {
+        guard let manager = preview.manager, let command = preview.command else { return }
         await updatePreviewAsync(manager: manager, command: command)
     }
 
@@ -380,28 +358,19 @@ actor UIController {
         }
     }
 
-    // MARK: - Merger cache helpers (actor-isolated, O(1))
+    // MARK: - Merger cache (actor-isolated forwarding — keeps nonisolated
+    //          call sites in runMatch unchanged)
 
-    /// Return cached results if pattern and item-count match the last stored entry.
     private func lookupMergerCache(pattern: String, itemCount: Int) -> ResultMerger? {
-        guard pattern == mergerCachePattern && itemCount == mergerCacheItemCount else { return nil }
-        return mergerCacheResults
+        mergerCache.lookup(pattern: pattern, itemCount: itemCount)
     }
 
-    /// Store results in the merger cache.  Gated by mergerCacheMax so that
-    /// low-selectivity queries (e.g. single character on 800 k items) do not
-    /// occupy memory with little reuse benefit.
     private func storeMergerCache(pattern: String, itemCount: Int, results: ResultMerger) {
-        guard results.count <= Self.mergerCacheMax else { return }
-        mergerCachePattern = pattern
-        mergerCacheResults = results
-        mergerCacheItemCount = itemCount
+        mergerCache.store(pattern: pattern, itemCount: itemCount, results: results)
     }
 
     private func invalidateMergerCache() {
-        mergerCachePattern = ""
-        mergerCacheResults = .empty
-        mergerCacheItemCount = 0
+        mergerCache.invalidate()
     }
 
     private func render() async {
@@ -416,7 +385,7 @@ actor UIController {
 
         let previewWidth: Int
         let previewStartCol: Int
-        if showSplitPreview {
+        if preview.showSplit {
             let listWidth = cols / 2 - 1
             previewWidth = cols - listWidth - 1
             previewStartCol = listWidth + 2
@@ -429,8 +398,8 @@ actor UIController {
             rows: rows,
             cols: cols,
             isReadingStdin: isReadingStdin,
-            showSplitPreview: showSplitPreview,
-            showFloatingPreview: showFloatingPreview
+            showSplitPreview: preview.showSplit,
+            showFloatingPreview: preview.showFloating
         )
 
         // Materialise the visible window here; assembleFrame receives state
@@ -438,46 +407,18 @@ actor UIController {
         let visibleItems = state.merger.slice(state.scrollOffset, state.scrollOffset + displayHeight)
         var buffer = renderer.assembleFrame(state: state, visibleItems: visibleItems, context: context, buffer: textBuffer)
 
-        if showSplitPreview {
+        if preview.showSplit {
             let startRow = 3
             let endRow = displayHeight + 2
-            previewBounds = PreviewBounds(startRow: startRow, endRow: endRow, startCol: previewStartCol, endCol: cols)
-            buffer += renderSplitPreview(startRow: startRow, endRow: endRow, startCol: previewStartCol, width: previewWidth)
-        } else if showFloatingPreview {
-            let (floatingBounds, floatingBuffer) = renderFloatingPreview(rows: rows, cols: cols)
-            previewBounds = floatingBounds
-            buffer += floatingBuffer
+            buffer += preview.renderSplit(startRow: startRow, endRow: endRow, startCol: previewStartCol, width: previewWidth, cols: cols)
+        } else if preview.showFloating {
+            let itemName = state.merger.get(state.selectedIndex).map { $0.item.text(in: textBuffer) } ?? ""
+            buffer += preview.renderFloating(rows: rows, cols: cols, itemName: itemName)
         } else {
-            previewBounds = nil
+            preview.bounds = nil
         }
 
         await terminal.write(buffer)
         await terminal.flush()
-    }
-
-    private func renderSplitPreview(startRow: Int, endRow: Int, startCol: Int, width: Int) -> String {
-        guard let manager = previewManager else { return "" }
-        return manager.renderSplitPreview(
-            content: cachedPreview,
-            scrollOffset: previewScrollOffset,
-            startRow: startRow,
-            endRow: endRow,
-            startCol: startCol,
-            width: width
-        )
-    }
-
-    private func renderFloatingPreview(rows: Int, cols: Int) -> (PreviewBounds?, String) {
-        guard showFloatingPreview, let manager = previewManager else { return (nil, "") }
-
-        let itemName = state.merger.get(state.selectedIndex).map { $0.item.text(in: textBuffer) } ?? ""
-
-        return manager.renderFloatingPreview(
-            content: cachedPreview,
-            scrollOffset: previewScrollOffset,
-            itemName: itemName,
-            rows: rows,
-            cols: cols
-        )
     }
 }
