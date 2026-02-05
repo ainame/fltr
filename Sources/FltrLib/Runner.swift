@@ -64,10 +64,10 @@ public struct Runner {
         // Wait briefly for initial items to load
         try? await Task.sleep(for: .milliseconds(100))
 
-        // Determine preview style.  Priority: --preview / --preview-float → FLTR_PREVIEW_COMMAND → cat {}.
+        // Determine preview style.  Priority: --preview / --preview-float → FLTR_PREVIEW_COMMAND.
+        // nil when none of the three is set — Ctrl-O becomes a no-op.
         let previewCommand = options.preview ?? options.previewFloat
             ?? ProcessInfo.processInfo.environment["FLTR_PREVIEW_COMMAND"]
-            ?? "cat {}"
         let useFloatingPreview = options.previewFloat != nil
 
         // Initialize UI components
