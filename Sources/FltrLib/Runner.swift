@@ -1,3 +1,4 @@
+import Foundation
 import TUI
 
 public struct Options {
@@ -63,8 +64,10 @@ public struct Runner {
         // Wait briefly for initial items to load
         try? await Task.sleep(for: .milliseconds(100))
 
-        // Determine preview style
+        // Determine preview style.  Priority: --preview / --preview-float → FLTR_PREVIEW_COMMAND → cat {}.
         let previewCommand = options.preview ?? options.previewFloat
+            ?? ProcessInfo.processInfo.environment["FLTR_PREVIEW_COMMAND"]
+            ?? "cat {}"
         let useFloatingPreview = options.previewFloat != nil
 
         // Initialize UI components
