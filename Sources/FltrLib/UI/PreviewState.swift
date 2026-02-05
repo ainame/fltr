@@ -41,8 +41,8 @@ struct PreviewState {
         self.manager     = command != nil
             ? PreviewManager(command: command, useFloatingPreview: useFloating)
             : nil
-        // Split starts visible when we have a command and are *not* in floating mode.
-        self.showSplit   = command != nil && !useFloating
+        // Preview starts hidden; Ctrl-O is the opt-in toggle to show it.
+        self.showSplit   = false
     }
 
     // ── state helpers ──────────────────────────────────────────────────

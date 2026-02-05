@@ -239,7 +239,10 @@ actor UIController {
 
     /// Cancel any in-flight preview and kick off a fresh one in the background.
     /// Every call site that needs a new preview reduces to this single path.
+    /// No-ops when the preview pane is hidden — avoids a subprocess round-trip
+    /// before the user has opted in via Ctrl-O.
     private func refreshPreview() {
+        guard preview.showSplit || preview.showFloating else { return }
         guard let manager = preview.manager, let command = preview.command else { return }
         currentPreviewTask?.cancel()
         currentPreviewTask = Task.detached {
@@ -338,8 +341,9 @@ actor UIController {
         await refreshPreviewIfConfigured()
     }
 
-    /// Actor-isolated gate: only calls updatePreviewAsync when preview is configured.
+    /// Actor-isolated gate: only calls updatePreviewAsync when preview is visible and configured.
     private func refreshPreviewIfConfigured() async {
+        guard preview.showSplit || preview.showFloating else { return }
         guard let manager = preview.manager, let command = preview.command else { return }
         await updatePreviewAsync(manager: manager, command: command)
     }
