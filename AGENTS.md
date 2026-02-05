@@ -67,7 +67,7 @@ FltrCSystem (C Shim Library)
 
 - **MergerCache** (`Sources/fltr/UI/MergerCache.swift`): Single-entry `(pattern, itemCount) → ResultMerger` cache extracted from UIController. `lookup` / `store` / `invalidate` are the full surface. Low-selectivity results (> 100 k) are deliberately not cached.
 
-- **PreviewState** (`Sources/fltr/UI/PreviewState.swift`): All preview view state in one struct: cached output, scroll offset, visibility toggles, hit-test bounds, and the `PreviewManager` reference. Owns the two render helpers (`renderSplit`, `renderFloating`) that forward to PreviewManager. Task lifecycle (`currentPreviewTask`) stays on UIController.
+- **PreviewState** (`Sources/fltr/UI/PreviewState.swift`): All preview view state in one struct: cached output, scroll offset, visibility toggles, hit-test bounds, and the `PreviewManager` reference. Owns the two render helpers (`renderSplit`, `renderFloating`) that forward to PreviewManager. Task lifecycle (`currentPreviewTask`) stays on UIController.  Preview is opt-in: both `showSplit` and `showFloating` start `false`; the user toggles the pane on with Ctrl-O.  `refreshPreview` and `refreshPreviewIfConfigured` short-circuit while the pane is hidden — no subprocess is spawned until the first toggle.
 
 - **InputHandler** (`Sources/fltr/UI/InputHandler.swift`): Parses keyboard/mouse events (escape sequences, arrow keys, mouse scrolling) and routes them to appropriate state updates.
 
@@ -115,7 +115,7 @@ Raw Input → UIController.handleKey()
   - Ctrl-K: Kill to end of line
   - Ctrl-U: Clear line
 - **Border below input**: Thin horizontal line separating input from results
-- **Preview windows**: Split-screen (fzf style) and floating overlay modes
+- **Preview windows**: Split-screen (fzf style) and floating overlay modes, opt-in via Ctrl-O.  Command source priority: `--preview` / `--preview-float` → `FLTR_PREVIEW_COMMAND` env var.  No preview when none of the three is set.
 - **Mouse support**: Scroll events for both item list and preview windows
 
 ## Concurrency Model

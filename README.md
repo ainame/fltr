@@ -66,8 +66,10 @@ ls -la | fltr --multi
 
 ### Preview files
 
+Preview starts hidden. Press **Ctrl-O** to toggle it on/off.
+
 ```bash
-# Show file contents (split view)
+# Show file contents (split view) — press Ctrl-O to open
 find . -type f | fltr --preview 'cat {}'
 
 # With syntax highlighting
@@ -75,6 +77,10 @@ find . -type f | fltr --preview 'bat --color=always {}'
 
 # Floating preview window
 find . -type f | fltr --preview-float 'head -30 {}'
+
+# Set a default preview command via env (same toggle behaviour)
+export FLTR_PREVIEW_COMMAND='bat --color=always {}'
+find . -type f | fltr   # Ctrl-O opens the preview
 ```
 
 ### Limit height
@@ -105,9 +111,12 @@ fltr [OPTIONS]
   -h, --height <N>          Limit display height
   -m, --multi               Enable multi-select mode
   --case-sensitive          Case-sensitive matching
-  --preview <command>       Show preview (split view)
-  --preview-float <command> Show preview (floating window)
+  --preview <command>       Show preview (split view, toggle with Ctrl-O)
+  --preview-float <command> Show preview (floating window, toggle with Ctrl-O)
   --help                    Show help
+
+Environment variables:
+  FLTR_PREVIEW_COMMAND      Default preview command when --preview / --preview-float are not given
 ```
 
 In preview commands, use `{}` as a placeholder for the selected item:
