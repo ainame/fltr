@@ -33,10 +33,12 @@ fltr (Executable)
 ├── Engine/       - MatchingEngine + ResultMerger (parallel matching via TaskGroup)
 ├── Reader/       - StdinReader (streaming, non-blocking)
 └── UI/           - Modular UI components
-    ├── UIController.swift     - Event loop orchestrator (actor, ~340 lines)
+    ├── UIController.swift     - Event loop orchestrator (actor, ~420 lines)
     ├── InputHandler.swift     - Keyboard/mouse parsing & routing (~200 lines)
     ├── UIRenderer.swift       - UI element rendering (~220 lines)
     ├── PreviewManager.swift   - Preview command execution & rendering (~210 lines)
+    ├── PreviewState.swift     - Preview view state + render forwarding
+    ├── MergerCache.swift      - Single-entry merger-level result cache
     └── UIState.swift          - View model (state management)
     │
     └── depends on ──▶ TUI (Library)
@@ -61,7 +63,11 @@ FltrCSystem (C Shim Library)
 
 - **ResultMerger** (`Sources/fltr/Engine/ResultMerger.swift`): Lazy k-way merge of per-partition sorted results (mirrors fzf's Merger). `count` is O(1); `get`/`slice` materialise in global rank order on demand — the terminal only pays for the visible window, not a full O(n log n) sort.
 
-- **UIController** (`Sources/fltr/UI/UIController.swift`): Main event loop orchestrator with 100ms refresh interval for streaming data. Coordinates between InputHandler, UIRenderer, and PreviewManager components. Materialises the visible item window from the ResultMerger before each render pass.
+- **UIController** (`Sources/fltr/UI/UIController.swift`): Main event loop orchestrator (actor) with 100ms refresh interval for streaming data. Owns the debounce task, fetchItemsTask, and the single render path. Holds `MergerCache` and `PreviewState` as stored-property structs — all access stays actor-isolated with zero extra hops. Materialises the visible item window from the ResultMerger before each render pass.
+
+- **MergerCache** (`Sources/fltr/UI/MergerCache.swift`): Single-entry `(pattern, itemCount) → ResultMerger` cache extracted from UIController. `lookup` / `store` / `invalidate` are the full surface. Low-selectivity results (> 100 k) are deliberately not cached.
+
+- **PreviewState** (`Sources/fltr/UI/PreviewState.swift`): All preview view state in one struct: cached output, scroll offset, visibility toggles, hit-test bounds, and the `PreviewManager` reference. Owns the two render helpers (`renderSplit`, `renderFloating`) that forward to PreviewManager. Task lifecycle (`currentPreviewTask`) stays on UIController.
 
 - **InputHandler** (`Sources/fltr/UI/InputHandler.swift`): Parses keyboard/mouse events (escape sequences, arrow keys, mouse scrolling) and routes them to appropriate state updates.
 
