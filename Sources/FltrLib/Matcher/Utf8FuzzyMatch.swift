@@ -120,6 +120,7 @@ public struct Utf8FuzzyMatch: Sendable {
     // ─── Phase 1: asciiFuzzyIndex ──────────────────────────────────────────
     /// Forward scan: populate F[0…M−1].  Backward scan: widen right bound.
     /// Returns nil on rejection.
+    /// Uses memchr (SIMD-optimized) for fast byte scanning, following fzf's strategy.
     @inlinable
     static func asciiFuzzyIndex(
         pattern: Span<UInt8>, text: Span<UInt8>,
@@ -129,37 +130,70 @@ public struct Utf8FuzzyMatch: Sendable {
         let M = pattern.count, N = text.count
         guard M <= N else { return nil }
 
-        var idx = 0, lastIdx = 0
-        for pidx in 0..<M {
-            let pb = caseSensitive ? pattern[pidx] : toLower(pattern[pidx])
-            while idx < N {
-                if (caseSensitive ? text[idx] : toLower(text[idx])) == pb { break }
-                idx += 1
-            }
-            if idx >= N { return nil }
-            F[pidx] = Int32(idx)
-            lastIdx = idx
-            idx += 1
-        }
+        var result: (minIdx: Int, maxIdx: Int)?
+        text.withUnsafeBufferPointer { textBuf in
+            pattern.withUnsafeBufferPointer { patBuf in
+                guard let textBase = textBuf.baseAddress,
+                      let patBase = patBuf.baseAddress else { return }
+                
+                var idx = 0, lastIdx = 0
+                for pidx in 0..<M {
+                    let pb = caseSensitive ? patBase[pidx] : toLower(patBase[pidx])
+                    
+                    // Use memchr for SIMD-optimized byte search (case-sensitive)
+                    if caseSensitive {
+                        guard let ptr = memchr(textBase.advanced(by: idx), 
+                                              Int32(pb), 
+                                              N - idx) else { return }
+                        let foundPtr = UnsafePointer<UInt8>(ptr.assumingMemoryBound(to: UInt8.self))
+                        idx = foundPtr - textBase
+                    } else {
+                        // Case-insensitive: need to check both lowercase and uppercase
+                        // Use memchr to find lowercase, then check for uppercase before it
+                        let upper: UInt8 = (pb >= 0x61 && pb <= 0x7A) ? pb - 0x20 : pb
+                        
+                        var foundIdx = N
+                        if let ptr = memchr(textBase.advanced(by: idx), Int32(pb), N - idx) {
+                            let foundPtr = UnsafePointer<UInt8>(ptr.assumingMemoryBound(to: UInt8.self))
+                            foundIdx = foundPtr - textBase
+                        }
+                        if pb != upper {
+                            if let ptr = memchr(textBase.advanced(by: idx), Int32(upper), N - idx) {
+                                let foundPtr = UnsafePointer<UInt8>(ptr.assumingMemoryBound(to: UInt8.self))
+                                let upperIdx = foundPtr - textBase
+                                foundIdx = min(foundIdx, upperIdx)
+                            }
+                        }
+                        if foundIdx >= N { return }
+                        idx = foundIdx
+                    }
+                    
+                    F[pidx] = Int32(idx)
+                    lastIdx = idx
+                    idx += 1
+                }
 
-        let minIdx = (Int(F[0]) > 0) ? Int(F[0]) - 1 : 0
+                let minIdx = (Int(F[0]) > 0) ? Int(F[0]) - 1 : 0
 
-        // backward: rightmost occurrence of last pattern byte
-        let lastPb = caseSensitive ? pattern[M-1] : toLower(pattern[M-1])
-        var scopeLast = lastIdx
-        if caseSensitive {
-            var i = N - 1
-            while i > lastIdx { if text[i] == lastPb { scopeLast = i; break }; i -= 1 }
-        } else {
-            let upper: UInt8 = (lastPb >= 0x61 && lastPb <= 0x7A) ? lastPb - 0x20 : lastPb
-            var i = N - 1
-            while i > lastIdx {
-                let b = text[i]
-                if b == lastPb || b == upper { scopeLast = i; break }
-                i -= 1
+                // backward: rightmost occurrence of last pattern byte
+                let lastPb = caseSensitive ? patBase[M-1] : toLower(patBase[M-1])
+                var scopeLast = lastIdx
+                if caseSensitive {
+                    var i = N - 1
+                    while i > lastIdx { if textBase[i] == lastPb { scopeLast = i; break }; i -= 1 }
+                } else {
+                    let upper: UInt8 = (lastPb >= 0x61 && lastPb <= 0x7A) ? lastPb - 0x20 : lastPb
+                    var i = N - 1
+                    while i > lastIdx {
+                        let b = textBase[i]
+                        if b == lastPb || b == upper { scopeLast = i; break }
+                        i -= 1
+                    }
+                }
+                result = (minIdx: minIdx, maxIdx: scopeLast + 1)
             }
         }
-        return (minIdx: minIdx, maxIdx: scopeLast + 1)
+        return result
     }
 
     // ─── Main entry ────────────────────────────────────────────────────────
