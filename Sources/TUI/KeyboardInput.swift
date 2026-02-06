@@ -28,6 +28,7 @@ public enum Key: Equatable, Sendable {
     case ctrlE  // Move to end of line
     case ctrlF  // Move forward one character
     case ctrlB  // Move backward one character
+    case ctrlV  // Page down (Emacs-style)
     case mouseScrollUp(col: Int, row: Int)
     case mouseScrollDown(col: Int, row: Int)
     case unknown
@@ -103,6 +104,9 @@ public struct KeyboardInput {
 
         case 21:  // Ctrl-U
             return .ctrlU
+
+        case 22:  // Ctrl-V
+            return .ctrlV
 
         case 32...126:  // Printable ASCII
             return .char(Character(UnicodeScalar(firstByte)))

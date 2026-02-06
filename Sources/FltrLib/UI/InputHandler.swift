@@ -122,6 +122,10 @@ struct InputHandler: Sendable {
             state.moveCursorLeft()
             return .none
 
+        case .ctrlV:
+            state.pageDown(visibleHeight: context.visibleHeight)
+            return .updatePreview
+
         case .left:
             state.moveCursorLeft()
             return .none
