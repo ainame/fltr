@@ -29,6 +29,7 @@ public enum Key: Equatable, Sendable {
     case ctrlF  // Move forward one character
     case ctrlB  // Move backward one character
     case ctrlV  // Page down (Emacs-style)
+    case altV   // Page up (Emacs-style)
     case mouseScrollUp(col: Int, row: Int)
     case mouseScrollDown(col: Int, row: Int)
     case unknown
@@ -61,6 +62,12 @@ public struct KeyboardInput {
                 default: return .unknown
                 }
             }
+            
+            // Handle Alt/Meta key combinations (ESC followed by character)
+            if next == 118 {  // 'v' - Alt-V for page up
+                return .altV
+            }
+            
             return .escape
 
         case 127, 8:  // DEL or BS

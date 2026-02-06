@@ -96,6 +96,18 @@ struct UIState: Sendable {
         }
     }
 
+    mutating func pageUp(visibleHeight: Int) {
+        // Move up by a full page (visibleHeight)
+        let newIndex = max(selectedIndex - visibleHeight, 0)
+        if newIndex != selectedIndex {
+            selectedIndex = newIndex
+            // Adjust scroll offset to keep selection visible
+            if selectedIndex < scrollOffset {
+                scrollOffset = selectedIndex
+            }
+        }
+    }
+
     mutating func toggleSelection() {
         guard let item = merger.get(selectedIndex) else { return }
         let itemIndex = item.item.index

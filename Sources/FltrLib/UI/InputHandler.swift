@@ -15,7 +15,17 @@ struct InputHandler: Sendable {
         }
 
         // Check for arrow keys and other escape sequences
-        guard let next = await terminal.readByte(), next == 91 else {  // '['
+        guard let next = await terminal.readByte() else {
+            return .escape
+        }
+        
+        // Handle Alt/Meta key combinations (ESC followed by character)
+        if next == 118 {  // 'v' - Alt-V for page up
+            return .altV
+        }
+        
+        // CSI sequences start with '['
+        guard next == 91 else {  // '['
             return .escape
         }
 
@@ -124,6 +134,10 @@ struct InputHandler: Sendable {
 
         case .ctrlV:
             state.pageDown(visibleHeight: context.visibleHeight)
+            return .updatePreview
+
+        case .altV:
+            state.pageUp(visibleHeight: context.visibleHeight)
             return .updatePreview
 
         case .left:
