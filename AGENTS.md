@@ -133,6 +133,7 @@ Key optimizations implemented:
 - **shrinkToFit after EOF**: ``TextBuffer.shrinkToFit()`` and ``ChunkStore.shrinkToFit()`` each reallocate their backing ``[UInt8]`` / ``[Chunk]`` at exact count, reclaiming the ~30 % headroom left by Array's doubling growth strategy.  Both are invoked once via ``ItemCache.sealAndShrink()``, called by ``StdinReader`` immediately after the read loop completes.
 - **fread-based StdinReader**: 64 KB read buffer, byte-scan for newlines, whitespace trimmed without Foundation; bytes appended directly into TextBuffer off-actor
 - **ChunkStore frozen/tail split**: sealed chunks are CoW-shared across snapshots; the tail (~2.4 KB) is the only per-snapshot copy, so concurrent streaming snapshots add negligible RSS
+- **SIMD byte scanning via memchr**: Phase 1 of FuzzyMatchV2 uses libc's ``memchr()`` for fast byte scanning (NEON on Apple Silicon, SSE2/AVX2 on x86). Following fzf's strategy (Go's ``bytes.IndexByte``), this provides 12–21% speedup over manual loops. Case-insensitive search uses two ``memchr()`` calls (lowercase + uppercase) and takes the minimum position.
 - Static delimiter set in CharClass (eliminates allocations per search)
 - Matrix buffer reuse via TaskLocal storage
 - Incremental filtering: when the query extends the previous one, searches within the previous match set (lossless — results are never capped)

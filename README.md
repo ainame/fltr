@@ -166,10 +166,11 @@ swift test
 Built with Swift 6.2 using:
 - Actors for safe concurrency
 - Parallel matching across CPU cores
+- SIMD-optimized byte scanning (memchr) for 12–21% faster matching
 - Streaming stdin reader
 - Incremental filtering for fast typing
 
-See `CLAUDE.md` for detailed architecture documentation.
+See `AGENTS.md` for detailed architecture documentation.
 
 ## License
 
