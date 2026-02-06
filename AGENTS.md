@@ -114,6 +114,8 @@ Raw Input → UIController.handleKey()
   - Ctrl-F / Ctrl-B: Forward/backward character
   - Ctrl-K: Kill to end of line
   - Ctrl-U: Clear line
+  - Ctrl-V: Page down (scroll by full page)
+  - Alt-V (Meta-V): Page up (scroll by full page)
 - **Border below input**: Thin horizontal line separating input from results
 - **Preview windows**: Split-screen (fzf style) and floating overlay modes, opt-in via Ctrl-O.  Command source priority: `--preview` / `--preview-float` → `FLTR_PREVIEW_COMMAND` env var.  No preview when none of the three is set.
 - **Mouse support**: Scroll events for both item list and preview windows

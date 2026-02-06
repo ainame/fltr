@@ -95,7 +95,9 @@ ls | fltr --height 10
 | Key | Action |
 |-----|--------|
 | Type | Filter items |
-| `↑` `↓` | Navigate results |
+| `↑` `↓` | Navigate results (one line) |
+| `Ctrl-V` | Page down (Emacs-style) |
+| `Alt-V` | Page up (Emacs-style) |
 | `Enter` | Select and exit |
 | `Tab` | Toggle selection (multi-select mode) |
 | `Esc` / `Ctrl-C` | Cancel |
