@@ -1,4 +1,4 @@
-.PHONY: all release install profile benchmark
+.PHONY: all release install linux profile benchmark
 
 all: release install
 
@@ -6,6 +6,9 @@ release:
 	swift build -c release
 install:
 	cp ./.build/release/fltr ~/.local/bin/
+
+linux:
+	swift build -c release --swift-sdk aarch64-swift-linux-musl
 
 # Usage: make profile INPUT=./input.txt ARGS="--query foo"
 profile: release
