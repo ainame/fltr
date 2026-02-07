@@ -82,8 +82,8 @@ public actor RawTerminal: Terminal {
         raw.c_cflag |= tcflag_t(CS8)
 
         // Non-blocking read with timeout
-        raw.c_cc.16 = 0  // VMIN = 0
-        raw.c_cc.17 = 1  // VTIME = 1 (100ms)
+        fltr_termios_setVMIN(&raw, 0)   // VMIN = 0
+        fltr_termios_setVTIME(&raw, 1)  // VTIME = 1 (100ms)
 
         guard tcsetattr(fd.rawValue, TCSAFLUSH, &raw) == 0 else {
             try? fd.close()
