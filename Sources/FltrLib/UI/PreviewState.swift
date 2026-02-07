@@ -1,3 +1,5 @@
+import TUI
+
 /// All preview-related view state in one place.
 ///
 /// Owned as a single `var` on UIController.  Because it is a plain struct
@@ -26,7 +28,7 @@ struct PreviewState {
     var showSplit:      Bool
     /// Bounds for mouse hit-testing (1-indexed, inclusive).  Rewritten every
     /// frame by the render helpers below.
-    var bounds:         PreviewBounds? = nil
+    var bounds:         Bounds? = nil
 
     // ── derived ────────────────────────────────────────────────────────
 

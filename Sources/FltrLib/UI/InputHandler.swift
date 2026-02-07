@@ -204,7 +204,7 @@ struct InputContext: Sendable {
     let visibleHeight: Int
     let cachedPreview: String
     let previewScrollOffset: Int
-    let previewBounds: PreviewBounds?
+    let previewBounds: Bounds?
 }
 
 /// Action to take after handling input

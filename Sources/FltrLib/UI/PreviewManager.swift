@@ -107,7 +107,7 @@ struct PreviewManager: Sendable {
         itemName: String,
         rows: Int,
         cols: Int
-    ) -> (bounds: PreviewBounds?, buffer: String) {
+    ) -> (bounds: Bounds?, buffer: String) {
         guard command != nil else { return (nil, "") }
 
         // Calculate window dimensions (80% of screen, centered)
@@ -117,7 +117,7 @@ struct PreviewManager: Sendable {
         let startCol = (cols - windowWidth) / 2
         let endRow = startRow + windowHeight - 1
         let endCol = startCol + windowWidth - 1
-        let bounds = PreviewBounds(
+        let bounds = Bounds(
             startRow: startRow,
             endRow: endRow,
             startCol: startCol,
@@ -182,16 +182,5 @@ struct PreviewManager: Sendable {
     }
 }
 
-/// Preview window bounds for mouse hit testing (1-indexed, inclusive)
-struct PreviewBounds: Sendable {
-    let startRow: Int
-    let endRow: Int
-    let startCol: Int
-    let endCol: Int
-
-    /// Check if position is within bounds
-    func contains(col: Int, row: Int) -> Bool {
-        return row >= startRow && row <= endRow &&
-               col >= startCol && col <= endCol
-    }
-}
+/// Type alias for preview window bounds (now using TUI.Bounds)
+public typealias PreviewBounds = Bounds

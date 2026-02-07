@@ -6,8 +6,10 @@ struct UIRenderer: Sendable {
     let maxHeight: Int?
     let multiSelect: Bool
 
-    /// Spinner widget for loading animation
-    private static let spinner = Spinner()
+    /// Status bar widget
+    private static let statusBar = StatusBar()
+    /// Horizontal separator widget
+    private static let separator = HorizontalSeparator()
 
     /// Assemble complete frame buffer for rendering.
     /// *visibleItems* is the already-sliced window from the caller (UIController
@@ -108,8 +110,7 @@ struct UIRenderer: Sendable {
 
     /// Render horizontal border line
     private func renderBorderLine(cols: Int) -> String {
-        let border = String(repeating: "─", count: cols - 1)
-        return ANSIColors.moveCursor(row: 2, col: 1) + ANSIColors.dim + border + ANSIColors.reset + ANSIColors.clearLineToEnd
+        return Self.separator.render(row: 2, width: cols)
     }
 
     /// Render item list with highlighting.
@@ -182,28 +183,18 @@ struct UIRenderer: Sendable {
         cols: Int,
         spinnerFrame: Int
     ) -> String {
-        // Show spinner on the left if loading
-        let prefix = isReadingStdin ? Self.spinnerFrame(frameCount: spinnerFrame) + " " : ""
-        
-        var status: String
-        if selectedItems.isEmpty {
-            status = "\(matchedCount)/\(totalItems)"
-        } else {
-            status = "\(matchedCount)/\(totalItems) (\(selectedItems.count) selected)"
-        }
-
-        // Add scroll indicator if there are more items than visible
-        if matchedCount > displayHeight {
-            let scrollPercent = Int((Double(scrollOffset) / Double(max(1, matchedCount - displayHeight))) * 100)
-            status += " [\(scrollPercent)%]"
-        }
-
-        return ANSIColors.moveCursor(row: row, col: 1) + ANSIColors.clearLineToEnd + TextRenderer.pad(prefix + status, width: cols)
-    }
-
-    /// Get the current spinner frame based on frame counter
-    static func spinnerFrame(frameCount: Int) -> String {
-        return spinner.frame(at: frameCount)
+        let config = StatusBar.Config(
+            matchedCount: matchedCount,
+            totalCount: totalItems,
+            selectedCount: selectedItems.count,
+            isLoading: isReadingStdin,
+            spinnerFrame: spinnerFrame,
+            scrollOffset: scrollOffset,
+            displayHeight: displayHeight,
+            row: row,
+            width: cols
+        )
+        return Self.statusBar.render(config: config)
     }
 }
 
