@@ -37,9 +37,8 @@ struct UIRenderer: Sendable {
         // Clear screen
         frame += "\u{001B}[2J"  // Clear entire screen
 
-        // Render input line (positions itself) - use full width, with spinner if loading
-        let spinner = context.isReadingStdin ? Self.spinnerFrame(frameCount: context.spinnerFrame) : nil
-        frame += renderInputLine(query: state.query, cursorPosition: state.cursorPosition, cols: cols, spinner: spinner)
+        // Render input line (positions itself) - use full width
+        frame += renderInputLine(query: state.query, cursorPosition: state.cursorPosition, cols: cols)
 
         // Render border line below input - use full width
         frame += renderBorderLine(cols: cols)
@@ -63,15 +62,16 @@ struct UIRenderer: Sendable {
             scrollOffset: state.scrollOffset,
             displayHeight: displayHeight,
             row: visibleItems.count + 3,
-            cols: listWidth
+            cols: listWidth,
+            spinnerFrame: context.spinnerFrame
         )
 
         return frame
     }
 
-    /// Render input line with cursor and spinner
-    private func renderInputLine(query: String, cursorPosition: Int, cols: Int, spinner: String? = nil) -> String {
-        let prompt = spinner.map { "\($0) " } ?? "> "
+    /// Render input line with cursor
+    private func renderInputLine(query: String, cursorPosition: Int, cols: Int) -> String {
+        let prompt = "> "
         let availableWidth = cols - prompt.count - 1
 
         // ANSI codes for cursor (inverted colors)
@@ -187,8 +187,12 @@ struct UIRenderer: Sendable {
         scrollOffset: Int,
         displayHeight: Int,
         row: Int,
-        cols: Int
+        cols: Int,
+        spinnerFrame: Int
     ) -> String {
+        // Show spinner on the left if loading
+        let prefix = isReadingStdin ? Self.spinnerFrame(frameCount: spinnerFrame) + " " : ""
+        
         var status: String
         if selectedItems.isEmpty {
             status = "\(matchedCount)/\(totalItems)"
@@ -202,7 +206,7 @@ struct UIRenderer: Sendable {
             status += " [\(scrollPercent)%]"
         }
 
-        return "\u{001B}[\(row);1H\u{001B}[K" + TextRenderer.pad(status, width: cols)
+        return "\u{001B}[\(row);1H\u{001B}[K" + TextRenderer.pad(prefix + status, width: cols)
     }
     
     /// Get the current spinner frame based on frame counter
