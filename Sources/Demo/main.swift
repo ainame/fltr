@@ -215,13 +215,13 @@ actor WidgetGallery {
         var buffer = ""
         
         // Title (centered, bold, orange)
-        let titlePadding = (cols - title.count) / 2
+        let titlePadding = max(0, (cols - title.count) / 2)
         buffer += ANSIColors.moveCursor(row: 1, col: 1) + ANSIColors.clearLineToEnd
         buffer += String(repeating: " ", count: titlePadding)
         buffer += ANSIColors.bold + ANSIColors.swiftOrange + title + ANSIColors.reset
-        
+
         // Subtitle (centered, dim)
-        let subtitlePadding = (cols - subtitle.count) / 2
+        let subtitlePadding = max(0, (cols - subtitle.count) / 2)
         buffer += ANSIColors.moveCursor(row: 2, col: 1) + ANSIColors.clearLineToEnd
         buffer += String(repeating: " ", count: subtitlePadding)
         buffer += ANSIColors.dim + subtitle + ANSIColors.reset
@@ -235,8 +235,8 @@ actor WidgetGallery {
         let totalWidth = pages.enumerated().map { (idx, page) in
             return page.count + 4 // "[" + page + "]" + " "
         }.reduce(0, +)
-        
-        let leftPadding = (cols - totalWidth) / 2
+
+        let leftPadding = max(0, (cols - totalWidth) / 2)
         buffer += String(repeating: " ", count: leftPadding)
         
         for (idx, page) in pages.enumerated() {
@@ -583,12 +583,12 @@ actor WidgetGallery {
     
     private func renderFooter(row: Int, cols: Int) -> String {
         let help = "← → / h l : Navigate  |  ↑ ↓ / k j : Select  |  Enter : Confirm  |  ESC / q : Exit"
-        let padding = (cols - help.count) / 2
-        
+        let padding = max(0, (cols - help.count) / 2)
+
         var buffer = ANSIColors.moveCursor(row: row, col: 1) + ANSIColors.clearLineToEnd
         buffer += String(repeating: " ", count: padding)
         buffer += ANSIColors.dim + help + ANSIColors.reset
-        
+
         return buffer
     }
 }
