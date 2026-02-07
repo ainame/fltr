@@ -18,6 +18,10 @@ xcuserdata/
 *.dSYM.zip
 *.dSYM
 
+# mimalloc build directories
+mimalloc-*/
+mimalloc-build-*/
+
 # Development
 .env
 .claude
