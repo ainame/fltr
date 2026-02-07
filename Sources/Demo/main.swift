@@ -35,23 +35,23 @@ actor WidgetGallery {
     ]
     
     func run() async throws {
-        let terminal = try RawTerminal()
+        let terminal = RawTerminal()
 
         // Enter raw mode to enable character-by-character input
         try await terminal.enterRawMode()
 
         // Enable mouse tracking for scroll events
-        try await terminal.write("\u{001B}[?1000h\u{001B}[?1006h")
+        await terminal.write("\u{001B}[?1000h\u{001B}[?1006h")
 
         // Hide cursor
-        try await terminal.write("\u{001B}[?25l")
+        await terminal.write("\u{001B}[?25l")
         
         defer {
             // Cleanup: show cursor, disable mouse tracking, and exit raw mode
             Task {
-                try? await terminal.write("\u{001B}[?25h\u{001B}[?1000l\u{001B}[?1006l")
-                try? await terminal.write(ANSIColors.clearScreen + ANSIColors.moveCursor(row: 1, col: 1))
-                try? await terminal.exitRawMode()
+                await terminal.write("\u{001B}[?25h\u{001B}[?1000l\u{001B}[?1006l")
+                await terminal.write(ANSIColors.clearScreen + ANSIColors.moveCursor(row: 1, col: 1))
+                await terminal.exitRawMode()
             }
         }
         
@@ -62,7 +62,7 @@ actor WidgetGallery {
         let animationTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(100))
-                await self.advanceSpinner()
+                self.advanceSpinner()
                 try? await self.render(terminal: terminal)
             }
         }
@@ -74,9 +74,9 @@ actor WidgetGallery {
             }
             
             let key = await parseKey(byte: byte, terminal: terminal)
-            
+
             // Handle key event
-            let shouldExit = await handleKey(key)
+            let shouldExit = handleKey(key)
             if shouldExit {
                 break
             }
@@ -198,8 +198,8 @@ actor WidgetGallery {
         
         // Render footer
         buffer += renderFooter(row: rows - 1, cols: cols)
-        
-        try await terminal.write(buffer)
+
+        await terminal.write(buffer)
     }
     
     private func getTerminalSize(terminal: any Terminal) async -> (rows: Int, cols: Int) {

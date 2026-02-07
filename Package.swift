@@ -61,7 +61,8 @@ let package = Package(
                 "TUI",
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
-            path: "Sources/Demo"
+            path: "Sources/Demo",
+            exclude: ["README.md"]
         ),
 
         // Benchmarks
