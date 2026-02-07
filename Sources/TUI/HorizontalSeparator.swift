@@ -5,7 +5,7 @@ import Foundation
 /// Provides customizable horizontal lines using box-drawing characters.
 public struct HorizontalSeparator: Sendable {
     /// Box-drawing character style
-    public enum Style: Sendable {
+    public enum Style: Sendable, Equatable {
         /// Light single line: ─
         case light
         /// Heavy single line: ━
@@ -16,7 +16,7 @@ public struct HorizontalSeparator: Sendable {
         case dashed
         /// Custom character
         case custom(Character)
-        
+
         var character: Character {
             switch self {
             case .light: return "─"

@@ -6,7 +6,7 @@ import Foundation
 /// The spinner cycles through frames to create an animation effect.
 public struct Spinner: Sendable {
     /// Spinner style
-    public enum Style: Sendable {
+    public enum Style: Sendable, Equatable {
         /// Braille dots spinner (default, compact)
         case braille
         /// Simple dots spinner

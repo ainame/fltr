@@ -54,6 +54,16 @@ let package = Package(
             dependencies: []
         ),
 
+        // Demo - Interactive TUI widget gallery
+        .executableTarget(
+            name: "tui-demo",
+            dependencies: [
+                "TUI",
+                .product(name: "SystemPackage", package: "swift-system"),
+            ],
+            path: "Sources/Demo"
+        ),
+
         // Benchmarks
         .executableTarget(
             name: "matcher-benchmark",
