@@ -75,7 +75,13 @@ actor WidgetGallery {
         // Main event loop
         while true {
             guard let byte = await terminal.readByte() else {
-                break
+                // readByte() returns nil when no input available (VTIME timeout)
+                // Only exit if the terminal is broken (closed/disconnected)
+                if await terminal.ttyBroken {
+                    break
+                }
+                // Otherwise continue polling
+                continue
             }
             
             let key = await parseKey(byte: byte, terminal: terminal)
