@@ -127,7 +127,13 @@ actor UIController {
                 break
             }
 
+            let wasReadingStdin = isReadingStdin
             isReadingStdin = await !reader.readingComplete()
+
+            // Trigger render when stdin completes to hide spinner immediately
+            if wasReadingStdin && !isReadingStdin {
+                scheduleRender()
+            }
 
             if let byte = await terminal.readByte() {
                 await handleKey(byte: byte)
@@ -407,7 +413,7 @@ actor UIController {
             showFloatingPreview: preview.showFloating,
             spinnerFrame: spinnerFrame
         )
-        
+
         // Increment spinner frame for animation
         if isReadingStdin {
             spinnerFrame = (spinnerFrame + 1) % 10
