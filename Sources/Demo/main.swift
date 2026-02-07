@@ -66,7 +66,7 @@ actor WidgetGallery {
         // Spinner animation task
         let animationTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(100))
+                try? await Task.sleep(for: .milliseconds(50))
                 self.advanceSpinner()
                 try? await self.render(terminal: terminal)
             }
