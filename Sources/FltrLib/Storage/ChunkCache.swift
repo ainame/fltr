@@ -1,4 +1,4 @@
-import Foundation
+import Synchronization
 
 /// Per-chunk query-result cache.  Mirrors fzf's ChunkCache (cache.go).
 ///
@@ -16,16 +16,14 @@ import Foundation
 ///
 /// ### Thread safety
 /// Instances are shared across TaskGroup partitions.  All mutations go through
-/// an NSLock.  The lock is never held across an await point.
+/// a `Mutex`.  The lock is never held across an await point.
 final class ChunkCache: @unchecked Sendable {
     /// Maximum result count that will be cached per chunk.
     /// Mirrors fzf: queryCacheMax = chunkSize / 5 = 100 / 5 = 20.
     static let queryCacheMax = Chunk.capacity / 5   // 20
 
-    private let lock = NSLock()
-
     /// chunkIndex → (queryString → [MatchedItem])
-    private var cache: [Int: [String: [MatchedItem]]] = [:]
+    private let state = Mutex<[Int: [String: [MatchedItem]]]>([:])
 
     // MARK: - Lookup
 
@@ -33,9 +31,9 @@ final class ChunkCache: @unchecked Sendable {
     /// Returns nil if the chunk is not full or the query has no cached entry.
     func lookup(chunkIndex: Int, chunkCount: Int, query: String) -> [MatchedItem]? {
         guard !query.isEmpty && chunkCount == Chunk.capacity else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
-        return cache[chunkIndex]?[query]
+        return state.withLock { cache in
+            cache[chunkIndex]?[query]
+        }
     }
 
     /// Prefix / suffix search.  Tries removing characters from the ends of the
@@ -47,22 +45,22 @@ final class ChunkCache: @unchecked Sendable {
     /// Algorithm mirrors fzf cache.go:82-94.
     func search(chunkIndex: Int, chunkCount: Int, query: String) -> [MatchedItem]? {
         guard !query.isEmpty && chunkCount == Chunk.capacity else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
-        guard let qc = cache[chunkIndex] else { return nil }
+        return state.withLock { cache in
+            guard let qc = cache[chunkIndex] else { return nil }
 
-        for idx in 1..<query.count {
-            // Try prefix (remove idx chars from the end)
-            let prefixEnd = query.index(query.startIndex, offsetBy: query.count - idx)
-            let prefix = String(query[query.startIndex..<prefixEnd])
-            if let cached = qc[prefix] { return cached }
+            for idx in 1..<query.count {
+                // Try prefix (remove idx chars from the end)
+                let prefixEnd = query.index(query.startIndex, offsetBy: query.count - idx)
+                let prefix = String(query[query.startIndex..<prefixEnd])
+                if let cached = qc[prefix] { return cached }
 
-            // Try suffix (remove idx chars from the start)
-            let suffixStart = query.index(query.startIndex, offsetBy: idx)
-            let suffix = String(query[suffixStart...])
-            if let cached = qc[suffix] { return cached }
+                // Try suffix (remove idx chars from the start)
+                let suffixStart = query.index(query.startIndex, offsetBy: idx)
+                let suffix = String(query[suffixStart...])
+                if let cached = qc[suffix] { return cached }
+            }
+            return nil
         }
-        return nil
     }
 
     // MARK: - Store
@@ -75,12 +73,12 @@ final class ChunkCache: @unchecked Sendable {
             && results.count <= Self.queryCacheMax
         else { return }
 
-        lock.lock()
-        defer { lock.unlock() }
-        if cache[chunkIndex] == nil {
-            cache[chunkIndex] = [:]
+        state.withLock { cache in
+            if cache[chunkIndex] == nil {
+                cache[chunkIndex] = [:]
+            }
+            cache[chunkIndex]![query] = results
         }
-        cache[chunkIndex]![query] = results
     }
 
     // MARK: - Invalidation
@@ -88,8 +86,8 @@ final class ChunkCache: @unchecked Sendable {
     /// Drop all cached data.  Called whenever the item list grows (new chunk
     /// appended or existing chunks may have shifted).
     func clear() {
-        lock.lock()
-        defer { lock.unlock() }
-        cache.removeAll(keepingCapacity: true)
+        state.withLock { cache in
+            cache.removeAll(keepingCapacity: true)
+        }
     }
 }
