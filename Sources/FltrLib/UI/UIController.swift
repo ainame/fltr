@@ -154,11 +154,11 @@ actor UIController {
                         // Always a full search: previousQuery is owned by the
                         // debounce task; writing it here would let the debounce
                         // path see a stale value and permanently cap its results.
-                        fetchItemsTask = Task.detached {
+                        fetchItemsTask = Task {
                             let chunkList = await self.cache.snapshotChunkList()
-                            let query     = await self.state.query
+                            let query     = self.state.query
 
-                            await self.invalidateMergerCache()
+                            self.invalidateMergerCache()
                             self.chunkCache.clear()
 
                             await self.runMatch(
