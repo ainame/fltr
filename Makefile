@@ -1,4 +1,4 @@
-.PHONY: all release install linux linux-mimalloc profile benchmark
+.PHONY: all release install linux profile benchmark
 
 all: release install
 
@@ -7,25 +7,22 @@ release:
 install:
 	cp ./.build/release/fltr ~/.local/bin/
 
-# Simple Linux static build (musl allocator)
-linux:
-	swift build -c release --swift-sdk aarch64-swift-linux-musl
-
-# Linux static build with mimalloc and increased stack size
+# Linux static build with mimalloc and increased stack size (aarch64 by default)
 # Builds mimalloc 3.0.10 via direct compilation (no CMake), links it with --whole-archive to replace musl's allocator
 # Stack size: 0x80000 (512 KiB)
+# Usage: make linux [ARCH=x86_64]
 MIMALLOC_VERSION ?= 3.0.10
-MIMALLOC_ARCH ?= aarch64
+ARCH ?= aarch64
 SWIFT_SDK_PATH := $(shell swift sdk configure --show-configuration swift-6.2.3-RELEASE_static-linux-0.0.1 | grep "sdkRootPath:" | head -1 | awk '{print $$2}')
 
-linux-mimalloc:
-	@if [ ! -f mimalloc-build-$(MIMALLOC_ARCH)/libmimalloc.a ]; then \
-		echo "Building mimalloc $(MIMALLOC_VERSION) for $(MIMALLOC_ARCH)..."; \
+linux:
+	@if [ ! -f mimalloc-build-$(ARCH)/libmimalloc.a ]; then \
+		echo "Building mimalloc $(MIMALLOC_VERSION) for $(ARCH)..."; \
 		if [ ! -d mimalloc-$(MIMALLOC_VERSION) ]; then \
 			curl -sSfL "https://github.com/microsoft/mimalloc/archive/refs/tags/v$(MIMALLOC_VERSION).tar.gz" | tar xz; \
 		fi; \
-		mkdir -p mimalloc-build-$(MIMALLOC_ARCH); \
-		clang --target=$(MIMALLOC_ARCH)-unknown-linux-musl \
+		mkdir -p mimalloc-build-$(ARCH); \
+		clang --target=$(ARCH)-unknown-linux-musl \
 			--sysroot=$(SWIFT_SDK_PATH) \
 			-O3 -DNDEBUG -DMI_LIBC_MUSL=1 -DMI_STATIC_LIB \
 			-fvisibility=hidden -fno-builtin-malloc \
@@ -46,12 +43,12 @@ linux-mimalloc:
 			   mimalloc-$(MIMALLOC_VERSION)/src/random.c \
 			   mimalloc-$(MIMALLOC_VERSION)/src/stats.c \
 			   mimalloc-$(MIMALLOC_VERSION)/src/prim/prim.c && \
-		ar rcs mimalloc-build-$(MIMALLOC_ARCH)/libmimalloc.a *.o; \
+		ar rcs mimalloc-build-$(ARCH)/libmimalloc.a *.o; \
 	fi
-	swift build -c release --product fltr --swift-sdk $(MIMALLOC_ARCH)-swift-linux-musl \
+	swift build -c release --product fltr --swift-sdk $(ARCH)-swift-linux-musl \
 		-Xlinker -z -Xlinker stack-size=0x80000 \
 		-Xlinker --whole-archive \
-		-Xlinker ./mimalloc-build-$(MIMALLOC_ARCH)/libmimalloc.a \
+		-Xlinker ./mimalloc-build-$(ARCH)/libmimalloc.a \
 		-Xlinker --no-whole-archive
 
 # Usage: make profile INPUT=./input.txt ARGS="--query foo"
