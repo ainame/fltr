@@ -93,7 +93,7 @@ public struct TextRenderer {
         for (index, char) in chars.enumerated() {
             if posSet.contains(index) {
                 // Highlight with bold + green, preserve background
-                result += "\u{001B}[1;32m\(char)\u{001B}[22;39m"
+                result += ANSIColors.highlightGreen + "\(char)" + ANSIColors.normalIntensity + ANSIColors.resetForeground
             } else {
                 result.append(char)
             }

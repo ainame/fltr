@@ -5,9 +5,9 @@ import TUI
 struct UIRenderer: Sendable {
     let maxHeight: Int?
     let multiSelect: Bool
-    
-    /// Spinner frames for loading animation (inspired by fzf/skim)
-    private static let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    /// Spinner widget for loading animation
+    private static let spinner = Spinner()
 
     /// Assemble complete frame buffer for rendering.
     /// *visibleItems* is the already-sliced window from the caller (UIController
@@ -35,7 +35,7 @@ struct UIRenderer: Sendable {
         var frame = ""
 
         // Clear screen
-        frame += "\u{001B}[2J"  // Clear entire screen
+        frame += ANSIColors.clearScreen
 
         // Render input line (positions itself) - use full width
         frame += renderInputLine(query: state.query, cursorPosition: state.cursorPosition, cols: cols)
@@ -75,8 +75,8 @@ struct UIRenderer: Sendable {
         let availableWidth = cols - prompt.count - 1
 
         // ANSI codes for cursor (inverted colors)
-        let cursorStart = "\u{001B}[7m"  // Reverse video
-        let cursorEnd = "\u{001B}[27m"   // Normal video
+        let cursorStart = ANSIColors.reverse
+        let cursorEnd = ANSIColors.normalVideo
 
         var displayText = ""
 
@@ -103,15 +103,13 @@ struct UIRenderer: Sendable {
         // Truncate if too long (preserving ANSI codes is handled by visual width)
         let displayQuery = TextRenderer.truncate(displayText, width: availableWidth)
 
-        return "\u{001B}[1;1H" + prompt + displayQuery + "\u{001B}[K"
+        return ANSIColors.moveCursor(row: 1, col: 1) + prompt + displayQuery + ANSIColors.clearLineToEnd
     }
 
     /// Render horizontal border line
     private func renderBorderLine(cols: Int) -> String {
-        let dimColor = "\u{001B}[2m"  // Dim/faint text
-        let resetColor = "\u{001B}[0m"
         let border = String(repeating: "─", count: cols - 1)
-        return "\u{001B}[2;1H" + dimColor + border + resetColor + "\u{001B}[K"
+        return ANSIColors.moveCursor(row: 2, col: 1) + ANSIColors.dim + border + ANSIColors.reset + ANSIColors.clearLineToEnd
     }
 
     /// Render item list with highlighting.
@@ -125,12 +123,6 @@ struct UIRenderer: Sendable {
         cols: Int,
         textBuffer: TextBuffer
     ) -> String {
-        // Pre-define ANSI codes to avoid repeated string allocations
-        let swiftOrange = "\u{001B}[1;38;5;202m"
-        let resetFg = "\u{001B}[22;39m"
-        let bgColor = "\u{001B}[48;5;236m"
-        let resetAll = "\u{001B}[0m"
-
         var buffer = ""
         for (displayIndex, matchedItem) in visibleItems.enumerated() {
             let row = displayIndex + 3  // Start from row 3 (after input on row 1 and border on row 2)
@@ -141,19 +133,19 @@ struct UIRenderer: Sendable {
 
             var prefix = "  "
             if isMarked {
-                prefix = " \(swiftOrange)>\(resetFg)"
+                prefix = " \(ANSIColors.swiftOrange)>\(ANSIColors.normalIntensity)\(ANSIColors.resetForeground)"
             }
             if isSelected {
                 if isMarked {
-                    prefix = "\(swiftOrange)>>\(resetFg)"
+                    prefix = "\(ANSIColors.swiftOrange)>>\(ANSIColors.normalIntensity)\(ANSIColors.resetForeground)"
                 } else {
-                    prefix = " \(swiftOrange)>\(resetFg)"
+                    prefix = " \(ANSIColors.swiftOrange)>\(ANSIColors.normalIntensity)\(ANSIColors.resetForeground)"
                 }
             }
 
             // Apply background color for selected line
-            let bgStart = isSelected ? bgColor : ""
-            let bgEnd = isSelected ? resetAll : ""
+            let bgStart = isSelected ? ANSIColors.grayBackground : ""
+            let bgEnd = isSelected ? ANSIColors.reset : ""
 
             let text = matchedItem.item.text(in: textBuffer)
             let prefixVisualWidth = 2
@@ -171,7 +163,7 @@ struct UIRenderer: Sendable {
             let paddedLine = TextRenderer.padWithoutANSI(content, width: cols - 1)
 
             // Position cursor and write line
-            buffer += "\u{001B}[\(row);1H\u{001B}[K"
+            buffer += ANSIColors.moveCursor(row: row, col: 1) + ANSIColors.clearLineToEnd
             buffer += bgStart + paddedLine + bgEnd
         }
 
@@ -206,12 +198,12 @@ struct UIRenderer: Sendable {
             status += " [\(scrollPercent)%]"
         }
 
-        return "\u{001B}[\(row);1H\u{001B}[K" + TextRenderer.pad(prefix + status, width: cols)
+        return ANSIColors.moveCursor(row: row, col: 1) + ANSIColors.clearLineToEnd + TextRenderer.pad(prefix + status, width: cols)
     }
-    
+
     /// Get the current spinner frame based on frame counter
     static func spinnerFrame(frameCount: Int) -> String {
-        return spinnerFrames[frameCount % spinnerFrames.count]
+        return spinner.frame(at: frameCount)
     }
 }
 

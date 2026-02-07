@@ -74,14 +74,10 @@ struct PreviewManager: Sendable {
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
         let maxLines = endRow - startRow + 1
 
-        // Swift orange for separator
-        let separatorColor = "\u{001B}[1;38;5;202m"
-        let resetColor = "\u{001B}[0m"
-
         // Draw vertical separator
         for row in startRow...endRow {
-            buffer += "\u{001B}[\(row);\(startCol - 1)H"
-            buffer += separatorColor + "│" + resetColor
+            buffer += ANSIColors.moveCursor(row: row, col: startCol - 1)
+            buffer += ANSIColors.swiftOrange + "│" + ANSIColors.reset
         }
 
         // Draw preview content with scroll offset
@@ -89,7 +85,7 @@ struct PreviewManager: Sendable {
             let row = startRow + i
             let lineIndex = scrollOffset + i
 
-            buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
+            buffer += ANSIColors.moveCursor(row: row, col: startCol) + ANSIColors.clearLineToEnd
 
             if lineIndex < lines.count {
                 let line = String(lines[lineIndex])
@@ -128,10 +124,6 @@ struct PreviewManager: Sendable {
             endCol: endCol
         )
 
-        // Swift orange for borders
-        let borderColor = "\u{001B}[1;38;5;202m"
-        let resetColor = "\u{001B}[0m"
-
         var buffer = ""
         let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
 
@@ -146,14 +138,14 @@ struct PreviewManager: Sendable {
             let row = startRow + i
 
             // Position cursor and clear entire line first
-            buffer += "\u{001B}[\(row);\(startCol)H\u{001B}[K"
+            buffer += ANSIColors.moveCursor(row: row, col: startCol) + ANSIColors.clearLineToEnd
 
             if i == 0 {
                 // Top border with title (left-aligned with 2-char left margin)
                 let titleLeftMargin = 2
                 let leftBorder = String(repeating: "─", count: titleLeftMargin)
                 let rightBorder = String(repeating: "─", count: max(0, windowWidth - title.count - titleLeftMargin - 2))
-                buffer += borderColor + "┌" + leftBorder + resetColor + title + borderColor + rightBorder + "┐" + resetColor
+                buffer += ANSIColors.swiftOrange + "┌" + leftBorder + ANSIColors.reset + title + ANSIColors.swiftOrange + rightBorder + "┐" + ANSIColors.reset
 
             } else if i == windowHeight - 1 {
                 // Bottom border with help text (centered)
@@ -161,7 +153,7 @@ struct PreviewManager: Sendable {
                 let helpLeftMargin = (windowWidth - helpText.count - 2) / 2
                 let bottomLeft = String(repeating: "─", count: max(0, helpLeftMargin))
                 let bottomRight = String(repeating: "─", count: max(0, windowWidth - helpLeftMargin - helpText.count - 2))
-                buffer += borderColor + "└" + bottomLeft + resetColor + helpText + borderColor + bottomRight + "┘" + resetColor
+                buffer += ANSIColors.swiftOrange + "└" + bottomLeft + ANSIColors.reset + helpText + ANSIColors.swiftOrange + bottomRight + "┘" + ANSIColors.reset
 
             } else {
                 // Content line with left/right borders (single line)
@@ -169,7 +161,7 @@ struct PreviewManager: Sendable {
                 let contentIndex = i - 1
                 let lineIndex = scrollOffset + contentIndex
 
-                buffer += borderColor + "│" + resetColor
+                buffer += ANSIColors.swiftOrange + "│" + ANSIColors.reset
 
                 if lineIndex < lines.count {
                     let line = String(lines[lineIndex])
@@ -182,7 +174,7 @@ struct PreviewManager: Sendable {
                     buffer += String(repeating: " ", count: contentWidth)
                 }
 
-                buffer += borderColor + "│" + resetColor
+                buffer += ANSIColors.swiftOrange + "│" + ANSIColors.reset
             }
         }
 
