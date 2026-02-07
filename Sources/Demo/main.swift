@@ -63,10 +63,10 @@ actor WidgetGallery {
         // Initial render
         try await render(terminal: terminal)
         
-        // Spinner animation task
+        // Spinner animation task (24 fps = ~42ms per frame)
         let animationTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(50))
+                try? await Task.sleep(for: .milliseconds(42))
                 self.advanceSpinner()
                 try? await self.render(terminal: terminal)
             }
