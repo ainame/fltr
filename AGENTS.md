@@ -55,7 +55,7 @@ FltrCSystem (C Shim Library)
 
 - **FuzzyMatcher** (`Sources/fltr/Matcher/`): Fuzzy matching with space-separated AND queries. Uses FuzzyMatchV2 with scoring bonuses for word boundaries, CamelCase, and consecutive matches.
 
-- **ItemCache** (`Sources/fltr/Storage/ItemCache.swift`): Actor-based thread-safe storage.  Owns the single ``TextBuffer`` (contiguous ``[UInt8]`` for all input text) and a ``ChunkStore``.  Items are registered via ``registerItem(offset:length:)`` — only two ``UInt32`` values cross the actor boundary per line.  ``buffer`` is ``nonisolated let`` (safe: ``TextBuffer`` is ``@unchecked Sendable`` and never reassigned) so the hot path and UI can capture it without actor hops.  ``sealAndShrink()`` is called once after stdin EOF to reclaim Array growth headroom in both the TextBuffer and the ChunkStore.
+- **ItemCache** (`Sources/fltr/Storage/ItemCache.swift`): Actor-based thread-safe storage.  Owns the single ``TextBuffer`` (contiguous ``[UInt8]`` for all input text) and a ``ChunkStore``.  Items are registered via ``registerItem(offset:length:)`` — only two ``UInt32`` values cross the actor boundary per line.  ``buffer`` is ``nonisolated let`` (safe: ``TextBuffer`` is ``@unchecked Sendable`` with a ``pthread_rwlock_t`` protecting its backing array; the reference itself is never reassigned) so the hot path and UI can capture it without actor hops.  ``sealAndShrink()`` is called once after stdin EOF to reclaim Array growth headroom in both the TextBuffer and the ChunkStore.
 
 - **ChunkStore / ChunkList** (`Sources/fltr/Storage/ChunkList.swift`): Items are grouped into 100-item ``Chunk`` structs (``InlineArray<100>``, ~2.4 KB each).  The live store keeps a ``frozen`` array of sealed (full) chunks and a mutable ``tail``.  A snapshot (``ChunkList``) captures ``frozen`` by value (Swift CoW — zero physical copy at snapshot time) and copies only the ``tail`` (~2.4 KB).  CoW materialises a copy only when the *next* chunk seals — once per 100 items rather than once per item — so concurrent snapshots during streaming share the same backing storage and add negligible RSS.
 
@@ -126,6 +126,8 @@ Raw Input → UIController.handleKey()
 - **Actors**: ItemCache, RawTerminal, UIController
 - **TaskGroup**: Parallel matching across CPU cores
 - **TaskLocal**: Per-task matrix buffer storage for algorithm optimization
+- **pthread_rwlock_t**: TextBuffer uses a read-write lock so concurrent matching tasks share read access while StdinReader gets exclusive write access
+- **Mutex**: ChunkCache (per-chunk query-result cache) uses ``Mutex`` from ``Synchronization`` for thread-safe access across TaskGroup partitions
 
 ## Performance Optimizations
 
