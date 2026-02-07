@@ -62,7 +62,18 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
             path: "Sources/Demo",
-            exclude: ["README.md"]
+            exclude: ["README.md", "DeclarativeDemo.swift", "DeclarativeExample.swift"]
+        ),
+
+        // Declarative Demo - SwiftUI-style declarative TUI PoC
+        .executableTarget(
+            name: "declarative-demo",
+            dependencies: [
+                "TUI",
+                .product(name: "SystemPackage", package: "swift-system"),
+            ],
+            path: "Sources/Demo",
+            sources: ["DeclarativeDemo.swift"]
         ),
 
         // Benchmarks
