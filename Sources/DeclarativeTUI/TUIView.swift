@@ -1,4 +1,5 @@
 import Foundation
+import TUI
 
 /// A piece of declarative terminal UI
 public protocol TUIView: Sendable {

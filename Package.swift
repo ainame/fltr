@@ -54,6 +54,12 @@ let package = Package(
             dependencies: []
         ),
 
+        // DeclarativeTUI - SwiftUI-style declarative TUI framework
+        .target(
+            name: "DeclarativeTUI",
+            dependencies: ["TUI"]
+        ),
+
         // Demo - Interactive TUI widget gallery
         .executableTarget(
             name: "tui-demo",
@@ -69,7 +75,7 @@ let package = Package(
         .executableTarget(
             name: "declarative-demo",
             dependencies: [
-                "TUI",
+                "DeclarativeTUI",
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
             path: "Sources/Demo",
