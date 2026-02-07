@@ -63,10 +63,10 @@ actor WidgetGallery {
         // Initial render
         try await render(terminal: terminal)
         
-        // Spinner animation task (24 fps = ~42ms per frame)
+        // Spinner animation task (matches fltr's 100ms refresh interval)
         let animationTask = Task {
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(42))
+                try? await Task.sleep(for: .milliseconds(100))
                 self.advanceSpinner()
                 try? await self.render(terminal: terminal)
             }
