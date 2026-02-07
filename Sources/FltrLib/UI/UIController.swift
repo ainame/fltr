@@ -252,7 +252,7 @@ actor UIController {
         guard preview.showSplit || preview.showFloating else { return }
         guard let manager = preview.manager, let command = preview.command else { return }
         currentPreviewTask?.cancel()
-        currentPreviewTask = Task.detached {
+        currentPreviewTask = Task {
             await self.updatePreviewAsync(manager: manager, command: command)
             await self.render()
         }
