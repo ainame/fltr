@@ -36,18 +36,22 @@ actor WidgetGallery {
     
     func run() async throws {
         let terminal = try RawTerminal()
-        
+
+        // Enter raw mode to enable character-by-character input
+        try await terminal.enterRawMode()
+
         // Enable mouse tracking for scroll events
         try await terminal.write("\u{001B}[?1000h\u{001B}[?1006h")
-        
+
         // Hide cursor
         try await terminal.write("\u{001B}[?25l")
         
         defer {
-            // Cleanup: show cursor and disable mouse tracking
+            // Cleanup: show cursor, disable mouse tracking, and exit raw mode
             Task {
                 try? await terminal.write("\u{001B}[?25h\u{001B}[?1000l\u{001B}[?1006l")
                 try? await terminal.write(ANSIColors.clearScreen + ANSIColors.moveCursor(row: 1, col: 1))
+                try? await terminal.exitRawMode()
             }
         }
         
