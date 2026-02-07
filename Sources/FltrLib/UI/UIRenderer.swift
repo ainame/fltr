@@ -5,6 +5,9 @@ import TUI
 struct UIRenderer: Sendable {
     let maxHeight: Int?
     let multiSelect: Bool
+    
+    /// Spinner frames for loading animation (inspired by fzf/skim)
+    private static let spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     /// Assemble complete frame buffer for rendering.
     /// *visibleItems* is the already-sliced window from the caller (UIController
@@ -34,8 +37,9 @@ struct UIRenderer: Sendable {
         // Clear screen
         frame += "\u{001B}[2J"  // Clear entire screen
 
-        // Render input line (positions itself) - use full width
-        frame += renderInputLine(query: state.query, cursorPosition: state.cursorPosition, cols: cols)
+        // Render input line (positions itself) - use full width, with spinner if loading
+        let spinner = context.isReadingStdin ? Self.spinnerFrame(frameCount: context.spinnerFrame) : nil
+        frame += renderInputLine(query: state.query, cursorPosition: state.cursorPosition, cols: cols, spinner: spinner)
 
         // Render border line below input - use full width
         frame += renderBorderLine(cols: cols)
@@ -65,9 +69,9 @@ struct UIRenderer: Sendable {
         return frame
     }
 
-    /// Render input line with cursor
-    private func renderInputLine(query: String, cursorPosition: Int, cols: Int) -> String {
-        let prompt = "> "
+    /// Render input line with cursor and spinner
+    private func renderInputLine(query: String, cursorPosition: Int, cols: Int, spinner: String? = nil) -> String {
+        let prompt = spinner.map { "\($0) " } ?? "> "
         let availableWidth = cols - prompt.count - 1
 
         // ANSI codes for cursor (inverted colors)
@@ -192,11 +196,6 @@ struct UIRenderer: Sendable {
             status = "\(matchedCount)/\(totalItems) (\(selectedItems.count) selected)"
         }
 
-        // Show loading indicator if still reading stdin (cached value, no async)
-        if isReadingStdin {
-            status += " [loading...]"
-        }
-
         // Add scroll indicator if there are more items than visible
         if matchedCount > displayHeight {
             let scrollPercent = Int((Double(scrollOffset) / Double(max(1, matchedCount - displayHeight))) * 100)
@@ -204,6 +203,11 @@ struct UIRenderer: Sendable {
         }
 
         return "\u{001B}[\(row);1H\u{001B}[K" + TextRenderer.pad(status, width: cols)
+    }
+    
+    /// Get the current spinner frame based on frame counter
+    static func spinnerFrame(frameCount: Int) -> String {
+        return spinnerFrames[frameCount % spinnerFrames.count]
     }
 }
 
@@ -214,4 +218,5 @@ struct RenderContext: Sendable {
     let isReadingStdin: Bool
     let showSplitPreview: Bool
     let showFloatingPreview: Bool
+    let spinnerFrame: Int
 }

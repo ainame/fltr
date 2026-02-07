@@ -21,6 +21,7 @@ actor UIController {
     private var maxHeight: Int?  // nil = use full terminal height
     private var lastItemCount: Int = 0
     private var isReadingStdin: Bool = true  // Cache to avoid async call in render
+    private var spinnerFrame: Int = 0  // Spinner animation frame counter
     private let multiSelect: Bool
     private var preview: PreviewState
     private let renderer: UIRenderer
@@ -403,8 +404,14 @@ actor UIController {
             cols: cols,
             isReadingStdin: isReadingStdin,
             showSplitPreview: preview.showSplit,
-            showFloatingPreview: preview.showFloating
+            showFloatingPreview: preview.showFloating,
+            spinnerFrame: spinnerFrame
         )
+        
+        // Increment spinner frame for animation
+        if isReadingStdin {
+            spinnerFrame = (spinnerFrame + 1) % 10
+        }
 
         // Materialise the visible window here; assembleFrame receives state
         // by value and cannot call mutating Merger methods itself.
