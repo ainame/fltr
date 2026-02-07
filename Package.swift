@@ -57,7 +57,9 @@ let package = Package(
         // DeclarativeTUI - SwiftUI-style declarative TUI framework
         .target(
             name: "DeclarativeTUI",
-            dependencies: ["TUI"]
+            dependencies: ["TUI"],
+            path: "Examples/DeclarativeTUI",
+            exclude: ["README.md"]
         ),
 
         // Demo - Interactive TUI widget gallery
@@ -67,8 +69,7 @@ let package = Package(
                 "TUI",
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
-            path: "Sources/Demo",
-            exclude: ["README.md", "DeclarativeDemo.swift", "DeclarativeExample.swift"]
+            path: "Examples/TUIDemo"
         ),
 
         // Declarative Demo - SwiftUI-style declarative TUI PoC
@@ -78,8 +79,7 @@ let package = Package(
                 "DeclarativeTUI",
                 .product(name: "SystemPackage", package: "swift-system"),
             ],
-            path: "Sources/Demo",
-            sources: ["DeclarativeDemo.swift"]
+            path: "Examples/DeclarativeDemo"
         ),
 
         // Benchmarks
