@@ -175,10 +175,10 @@ actor WidgetGallery {
     
     private func render(terminal: any Terminal) async throws {
         var buffer = ANSIColors.clearScreen
-        
-        // Get terminal size (assume 80x24 if we can't detect)
-        let (rows, cols) = getTerminalSize()
-        
+
+        // Get terminal size using terminal's getSize() method
+        let (rows, cols) = await getTerminalSize(terminal: terminal)
+
         // Render header
         buffer += renderHeader(cols: cols)
         
@@ -198,13 +198,12 @@ actor WidgetGallery {
         try await terminal.write(buffer)
     }
     
-    private func getTerminalSize() -> (rows: Int, cols: Int) {
-        // Try to get terminal size from environment or use defaults
-        if let cols = ProcessInfo.processInfo.environment["COLUMNS"],
-           let rows = ProcessInfo.processInfo.environment["LINES"],
-           let c = Int(cols), let r = Int(rows) {
-            return (r, c)
+    private func getTerminalSize(terminal: any Terminal) async -> (rows: Int, cols: Int) {
+        // Use terminal's getSize() method for accurate detection
+        if let size = try? await terminal.getSize() {
+            return size
         }
+        // Fallback to defaults if detection fails
         return (24, 80)
     }
     
