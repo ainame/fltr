@@ -7,16 +7,9 @@
 
 ## Summary
 
-Initial investigation suggested fltr was using 64% more memory than fzf on macOS (234 MB vs 148 MB), with an unexplained gap of ~108 MB between theoretical minimum (127 MB) and actual usage (234 MB).
+Initial investigation suggested fltr was using 64% more memory than fzf (234 MB vs 148 MB), with an unexplained gap of ~108 MB between theoretical minimum (127 MB) and actual usage (234 MB).
 
 **Root cause found**: The gap is **system-level malloc pre-allocation**, not application waste.
-
-**Platform comparison**:
-- **macOS**: 234 MB RSS (aggressive malloc pre-allocation)
-- **Linux (musl)**: 78 MB RSS (conservative allocation) ✅
-- **fzf (macOS)**: 148 MB RSS
-
-**Conclusion**: On Linux, fltr uses **47% less memory** than fzf on macOS!
 
 ## Memory Breakdown
 
@@ -71,8 +64,6 @@ Total:    119.8 MB
 
 ## Comparison with fzf
 
-### macOS (darwin)
-
 **fzf (Go)**: 148 MB
 - Go's allocator has different pre-allocation behavior
 - Smaller runtime overhead
@@ -87,26 +78,6 @@ Total:    119.8 MB
 - Actual data: +9 MB (acceptable)
 - Empty regions: +105 MB (system behavior, not waste)
 - Runtime: +5 MB (Swift vs Go baseline)
-
-### Linux (Ubuntu, musl)
-
-**fltr (Swift with musl)**: 78.3 MB RSS ✅
-- VSZ (virtual): 144.2 MB
-- RSS (resident): 78.3 MB
-- **66% less than macOS!**
-- **47% less than fzf on macOS!**
-
-**Why so much lower:**
-- musl allocator is extremely conservative
-- Minimal runtime overhead (~3-5 MB vs macOS's 20 MB)
-- No aggressive pre-allocation (vs macOS's 120 MB)
-- Lazy physical page allocation
-
-**Breakdown (estimated):**
-- TextBuffer: ~65-70 MB (some pages not yet in RAM)
-- ChunkStore: ~6-8 MB
-- Runtime: ~3-5 MB (musl is minimal)
-- Pre-allocation: negligible
 
 ## Optimizations Completed
 
