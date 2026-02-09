@@ -187,6 +187,40 @@ make profile INPUT=./input.txt ARGS="--query foo"
 make benchmark
 ```
 
+## Memory Characteristics
+
+### Expected Memory Usage
+
+For reference input (827k lines, 97.8 MB text):
+- **RSS (Resident Set Size)**: ~234 MB
+  - Actual data: ~109 MB (TextBuffer + ChunkStore + overhead)
+  - Empty malloc regions: ~120 MB (macOS pre-allocation)
+  - Runtime & libraries: ~20 MB
+
+**Note**: The "empty" regions are zero-filled virtual memory pre-allocated by macOS malloc for large allocations. This is normal behavior and doesn't indicate waste. See [MEMORY_ANALYSIS.md](MEMORY_ANALYSIS.md) for complete analysis.
+
+### Per-line Memory Cost
+
+- TextBuffer: ~118 bytes/line (average line length)
+- Item metadata: 12 bytes/line (Int32 + UInt32 + UInt32)
+- Chunk overhead: ~0.14 bytes/line (amortized)
+- **Total: ~130 bytes/line**
+
+During matching (with query):
+- MatchedItem: 82 bytes (after UInt16 optimization)
+- For 50% selectivity: adds ~33 MB
+- For 90% selectivity: adds ~60 MB
+
+### Memory Profiling
+
+To analyze memory usage:
+```bash
+./profile_vmmap.sh  # Quick region analysis
+./profile_heap.sh   # Detailed allocation tracking
+```
+
+See [PROFILING.md](PROFILING.md) for detailed profiling guide.
+
 ## Platform Support
 
 - macOS 14+ (Sonoma)

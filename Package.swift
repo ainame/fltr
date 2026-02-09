@@ -89,6 +89,13 @@ let package = Package(
             path: "Sources/Benchmarks"
         ),
 
+        // Memory profiling test
+        .executableTarget(
+            name: "memory-test",
+            dependencies: ["FltrLib"],
+            path: "Sources/memory-test"
+        ),
+
         // Tests
         .testTarget(
             name: "fltrTests",

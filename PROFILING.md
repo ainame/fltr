@@ -1,8 +1,16 @@
 # Memory Profiling Guide
 
-## Current Status
+## ✅ Investigation Complete
 
-**Problem**: Initial load uses 234.8 MB but should theoretically use ~127 MB
+**Result**: See [MEMORY_ANALYSIS.md](MEMORY_ANALYSIS.md) for full findings.
+
+**TL;DR**: The 108 MB gap is macOS malloc pre-allocating empty regions (119.8 MB). Actual data usage is 108.7 MB, which is correct and efficient. No action needed.
+
+---
+
+## Historical Context
+
+**Original Problem**: Initial load uses 234.8 MB but should theoretically use ~127 MB
 **Gap**: ~108 MB unexplained
 
 ## Quick Profiling (Recommended)
