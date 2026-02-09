@@ -8,6 +8,8 @@
 /// For terminal rendering this is appropriate — display-width calculations
 /// are handled externally by `TextRenderer`.
 public struct Screen: Sendable {
+    private static let space: UInt8 = 0x20
+
     public let rows: Int
     public let cols: Int
     private var buffer: [UInt8]
@@ -20,7 +22,7 @@ public struct Screen: Sendable {
     public init(rows: Int, cols: Int) {
         self.rows = rows
         self.cols = cols
-        self.buffer = [UInt8](repeating: 0x20, count: rows * cols)
+        self.buffer = [UInt8](repeating: Self.space, count: rows * cols)
     }
 
     /// Writes text at the specified position.
@@ -47,8 +49,7 @@ public struct Screen: Sendable {
     public mutating func clear() {
         buffer.withUnsafeMutableBufferPointer { ptr in
             guard let base = ptr.baseAddress else { return }
-            // 0x20 == ASCII space
-            base.initialize(repeating: 0x20, count: ptr.count)
+            base.initialize(repeating: Self.space, count: ptr.count)
         }
     }
 
