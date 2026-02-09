@@ -123,7 +123,7 @@ public struct FuzzyMatchV2: Sendable {
         // Backtrack to find match positions
         let positions = backtrack(H: buffer.H, lastMatch: buffer.lastMatch, patternLen: patternLen, endCol: bestCol)
 
-        return MatchResult(score: bestScore, positions: positions)
+        return MatchResult(score: Int16(clamping: bestScore), positions: positions)
     }
 
     // Optimized pre-filter: check if all pattern chars exist in text
@@ -146,15 +146,15 @@ public struct FuzzyMatchV2: Sendable {
         return true
     }
 
-    private static func backtrack(H: [[Int]], lastMatch: [[Int]], patternLen: Int, endCol: Int) -> [Int] {
-        var positions: [Int] = []
+    private static func backtrack(H: [[Int]], lastMatch: [[Int]], patternLen: Int, endCol: Int) -> [UInt16] {
+        var positions: [UInt16] = []
         var col = endCol
         var row = patternLen
 
         while row > 0 && col > 0 {
             let matchPos = lastMatch[row][col]
             if matchPos >= 0 && matchPos < col {
-                positions.append(matchPos)
+                positions.append(UInt16(matchPos))
                 row -= 1
                 col = matchPos
             } else {

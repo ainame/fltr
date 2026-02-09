@@ -103,7 +103,7 @@ func emptyPattern() {
     let result = matcher.match(pattern: "", text: "apple")
     #expect(result != nil)
     #expect(result?.score == 0)
-    #expect(result?.positions == [])
+    #expect(result?.positions == [] as [UInt16])
 }
 
 @Test("Match positions tracking")
@@ -708,7 +708,7 @@ func scopeSingleCharAtStart() {
     // 'a' appears only at index 0; scope window should be [0, 0]
     let result = matcher.match(pattern: "a", text: "abcdefghij")
     #expect(result != nil)
-    #expect(result!.positions == [0])
+    #expect(result!.positions == [0] as [UInt16])
 }
 
 @Test("Scope reduction — single char match at end of string")
@@ -717,7 +717,7 @@ func scopeSingleCharAtEnd() {
     // 'z' appears only at the very end
     let result = matcher.match(pattern: "z", text: "abcdefghijklmnopqrstuvwxyz")
     #expect(result != nil)
-    #expect(result!.positions == [25])
+    #expect(result!.positions == [25] as [UInt16])
 }
 
 @Test("Scope reduction — single char match in middle, multiple occurrences")
@@ -744,7 +744,7 @@ func scopeMultiCharAtEnd() {
     #expect(result!.positions.count == 3)
     // positions should be the last three bytes
     let len = text.utf8.count
-    #expect(result!.positions == [len - 3, len - 2, len - 1])
+    #expect(result!.positions == [UInt16(len - 3), UInt16(len - 2), UInt16(len - 1)])
 }
 
 @Test("Scope reduction — multi-char pattern, match only at start")
@@ -753,7 +753,7 @@ func scopeMultiCharAtStart() {
     let text = "abczzzzzzzzzzzzzzzzzzzzzzzzz"
     let result = matcher.match(pattern: "abc", text: text)
     #expect(result != nil)
-    #expect(result!.positions == [0, 1, 2])
+    #expect(result!.positions == [0, 1, 2] as [UInt16])
 }
 
 @Test("Scope reduction — score stability: word-boundary bonus preserved")
@@ -776,7 +776,7 @@ func scopeCaseInsensitiveBackward() {
     let result = matcher.match(pattern: "a", text: "bcdefghijklmnopqrstuvwxyzA")
     #expect(result != nil)
     // Should match the 'A' at the end (index 25) — it's the only 'a'/'A'
-    #expect(result!.positions == [25])
+    #expect(result!.positions == [25] as [UInt16])
 }
 
 @Test("Scope reduction — long path, pattern scattered")

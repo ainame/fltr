@@ -54,8 +54,8 @@ struct FuzzyMatcher: Sendable {
         }
 
         // Multiple tokens - all must match (AND behavior)
-        var totalScore = 0
-        var allPositions: [Int] = []
+        var totalScore: Int16 = 0
+        var allPositions: [UInt16] = []
 
         for token in tokens {
             guard let result = Utf8FuzzyMatch.match(pattern: String(token), text: text, caseSensitive: caseSensitive) else {
@@ -103,8 +103,8 @@ struct FuzzyMatcher: Sendable {
         }
 
         // Multi-token: walk the span once, slicing on spaces.
-        var totalScore = 0
-        var allPositions: [Int] = []
+        var totalScore: Int16 = 0
+        var allPositions: [UInt16] = []
         var tokenStart = 0
 
         for i in 0...patSpan.count {   // iterate one past end to flush last token
@@ -184,7 +184,7 @@ struct MatchedItem: Sendable {
     }
 
     var score: Int {
-        matchResult.score
+        Int(matchResult.score)
     }
 
     // MARK: - Rank-point construction  (mirrors fzf result.go : buildResult)
@@ -199,14 +199,14 @@ struct MatchedItem: Sendable {
         let maxU16 = Int(UInt16.max)
 
         // --- byScore (bits 48…63) ---  higher score → lower value  (always active)
-        let byScore = UInt16(clamping: maxU16 - matchResult.score)
+        let byScore = UInt16(clamping: maxU16 - Int(matchResult.score))
 
         // --- byPathname (bits 32…47) ---  path scheme only
         // Find the last path separator at or before the match start.
         // a match right after a '/' (distance 1) ranks above one mid-segment.
         let byPathname: UInt16
         if case .path = scheme {
-            let minBegin = matchResult.positions.first ?? 0
+            let minBegin = Int(matchResult.positions.first ?? 0)
             var delimBeforeMatch = -1
             let base = allBytes.baseAddress! + offset
             for idx in 0..<min(minBegin, length) {

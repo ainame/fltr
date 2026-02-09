@@ -83,7 +83,7 @@ public struct TextRenderer {
     ///   - text: The text to highlight
     ///   - positions: Character positions to highlight
     /// - Returns: Text with highlighted characters
-    public static func highlight(_ text: String, positions: [Int]) -> String {
+    public static func highlight(_ text: String, positions: [UInt16]) -> String {
         guard !positions.isEmpty else { return text }
 
         var result = ""
@@ -91,7 +91,7 @@ public struct TextRenderer {
         let posSet = Set(positions)
 
         for (index, char) in chars.enumerated() {
-            if posSet.contains(index) {
+            if posSet.contains(UInt16(index)) {
                 // Highlight with bold + green, preserve background
                 result += ANSIColors.highlightGreen + "\(char)" + ANSIColors.normalIntensity + ANSIColors.resetForeground
             } else {
@@ -111,7 +111,7 @@ public struct TextRenderer {
     ///   - positions: Character positions to highlight
     ///   - width: Maximum visual width
     /// - Returns: Truncated and highlighted text
-    public static func truncateAndHighlight(_ text: String, positions: [Int], width: Int) -> String {
+    public static func truncateAndHighlight(_ text: String, positions: [UInt16], width: Int) -> String {
         // First truncate to fit width
         var currentWidth = 0
         var truncatedLength = 0
@@ -129,7 +129,7 @@ public struct TextRenderer {
         let truncatedText = String(text.prefix(truncatedLength))
 
         // Filter positions to only include those within truncated range
-        let validPositions = positions.filter { $0 < truncatedLength }
+        let validPositions = positions.filter { Int($0) < truncatedLength }
 
         // Apply highlighting to truncated text
         return highlight(truncatedText, positions: validPositions)

@@ -420,7 +420,7 @@ public struct Utf8FuzzyMatch: Sendable {
         guard bestScore > 0 else { return nil }
 
         // ── Phase 4: backtrack ─────────────────────────────────────────
-        var positions = [Int](repeating: 0, count: M)
+        var positions = [UInt16](repeating: 0, count: M)
 
         buf.I16.withUnsafeBufferPointer { i16buf in
             buf.I32.withUnsafeBufferPointer { i32buf in
@@ -450,7 +450,7 @@ public struct Utf8FuzzyMatch: Sendable {
                         }
 
                         if s > s1 && (s > s2 || (s == s2 && preferMatch)) {
-                            pos[i] = minIdx + j
+                            pos[i] = UInt16(minIdx + j)
                             if i == 0 { break }
                             i -= 1
                         }
@@ -465,6 +465,6 @@ public struct Utf8FuzzyMatch: Sendable {
             }
         }
 
-        return MatchResult(score: Int(bestScore), positions: positions)
+        return MatchResult(score: Int16(bestScore), positions: positions)
     }
 }
