@@ -1,17 +1,18 @@
-import Foundation
-
 /// Virtual screen buffer for efficient terminal rendering.
 ///
-/// A double-buffered approach to terminal rendering that:
-/// - Maintains an in-memory character grid
-/// - Supports positioned text writing
-/// - Enables efficient screen updates
-public struct Screen {
+/// Uses a flat `[UInt8]` buffer (1 byte per cell) instead of `[[Character]]`
+/// (16 bytes per cell), yielding ~16x less memory and a single heap allocation
+/// instead of one per row. Clearing is a `memset`-equivalent operation.
+///
+/// Trade-off: cells store UTF-8 code units, not full grapheme clusters.
+/// For terminal rendering this is appropriate — display-width calculations
+/// are handled externally by `TextRenderer`.
+public struct Screen: Sendable {
     public let rows: Int
     public let cols: Int
-    private var buffer: [[Character]]
+    private var buffer: [UInt8]
 
-    /// Creates a new screen buffer.
+    /// Creates a new screen buffer filled with spaces.
     ///
     /// - Parameters:
     ///   - rows: Number of rows
@@ -19,10 +20,12 @@ public struct Screen {
     public init(rows: Int, cols: Int) {
         self.rows = rows
         self.cols = cols
-        self.buffer = Array(repeating: Array(repeating: " ", count: cols), count: rows)
+        self.buffer = [UInt8](repeating: 0x20, count: rows * cols)
     }
 
     /// Writes text at the specified position.
+    ///
+    /// Characters beyond the right edge of the row are silently clipped.
     ///
     /// - Parameters:
     ///   - text: The text to write
@@ -31,20 +34,21 @@ public struct Screen {
     public mutating func write(_ text: String, row: Int, col: Int) {
         guard row < rows, col < cols else { return }
 
-        var currentCol = col
-        for char in text {
-            guard currentCol < cols else { break }
-            buffer[row][currentCol] = char
-            currentCol += 1
+        var offset = row &* cols &+ col
+        let end = row &* cols &+ cols
+        for byte in text.utf8 {
+            guard offset < end else { break }
+            buffer[offset] = byte
+            offset &+= 1
         }
     }
 
-    /// Clears the entire screen buffer.
+    /// Clears the entire screen buffer (fills with spaces).
     public mutating func clear() {
-        for row in 0..<rows {
-            for col in 0..<cols {
-                buffer[row][col] = " "
-            }
+        buffer.withUnsafeMutableBufferPointer { ptr in
+            guard let base = ptr.baseAddress else { return }
+            // 0x20 == ASCII space
+            base.initialize(repeating: 0x20, count: ptr.count)
         }
     }
 
@@ -54,6 +58,12 @@ public struct Screen {
     /// - Returns: The row content as a string
     public func getRow(_ row: Int) -> String {
         guard row < rows else { return "" }
-        return String(buffer[row])
+        let start = row &* cols
+        return String(unsafeUninitializedCapacity: cols) { dest in
+            buffer.withUnsafeBufferPointer { src in
+                _ = dest.initialize(fromContentsOf: src[start..<start &+ cols])
+            }
+            return cols
+        }
     }
 }
