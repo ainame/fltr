@@ -5,11 +5,13 @@
 /// first; only then is the ``Item`` (with its offset window) registered in the
 /// store.  This ordering guarantees that any ``Item`` that has escaped the actor
 /// already has valid bytes behind it.
-actor ItemCache {
+package actor ItemCache {
     private let store = ChunkStore()
     nonisolated let buffer = TextBuffer()
 
-    func append(_ text: String) {
+    package init() {}
+
+    package func append(_ text: String) {
         let index = Int32(store.totalCount)
         let (offset, length) = buffer.append(text)
         let item = Item(index: index, offset: offset, length: length)
@@ -25,7 +27,7 @@ actor ItemCache {
         store.append(item)
     }
 
-    func count() -> Int {
+    package func count() -> Int {
         store.totalCount
     }
 
@@ -44,7 +46,7 @@ actor ItemCache {
     /// store.  Call exactly once after stdin is fully consumed.  The transient
     /// cost is one extra copy of each buffer at exact size; the old over-sized
     /// buffer is freed immediately after.
-    func sealAndShrink() {
+    package func sealAndShrink() {
         store.shrinkToFit()
         buffer.shrinkToFit()
     }

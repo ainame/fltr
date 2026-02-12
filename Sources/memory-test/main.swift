@@ -19,7 +19,7 @@ while let line = readLine() {
     let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmed.isEmpty {
         Task {
-            await cache.registerItem(text: trimmed)
+            await cache.append(trimmed)
         }
         lineCount += 1
         byteCount += trimmed.utf8.count
@@ -33,7 +33,7 @@ print("Read \(lineCount) lines, \(byteCount) bytes in \(String(format: "%.2f", e
 Task {
     await cache.sealAndShrink()
 
-    let count = await cache.itemCount()
+    let count = await cache.count()
     print("ItemCache has \(count) items")
 
     // Keep alive for profiling
