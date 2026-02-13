@@ -8,22 +8,31 @@ import Musl
 
 /// Append-only contiguous byte store for all item text.
 ///
-/// Mirrors fzf's approach: every line read from stdin is appended into a single
-/// growing ``[UInt8]`` array.  Each ``Item`` records an ``(offset, length)`` window
-/// into this buffer instead of owning its own ``String``.  This eliminates
-/// ~50 bytes of per-item allocator overhead (malloc header + padding) that
-/// individual ``String`` heap buffers incur.
+/// Every line read from stdin is appended into a single contiguous buffer.
+/// Each ``Item`` records an ``(offset, length)`` window into this buffer
+/// instead of owning its own ``String``.  This eliminates ~50 bytes of
+/// per-item allocator overhead (malloc header + padding) that individual
+/// ``String`` heap buffers incur.
+///
+/// ### Backing store
+/// By default the buffer is a Swift ``[UInt8]`` array.  When the
+/// ``MmapBuffer`` package trait is enabled (``swift build --traits MmapBuffer``),
+/// the backing store is an ``mmap``-based buffer that bypasses macOS
+/// libmalloc's zone allocator, eliminating ~120 MB of speculative
+/// ``MALLOC_LARGE`` pre-allocation for large inputs.
 ///
 /// ### Sendable safety
-/// A ``pthread_rwlock_t`` protects all access to the backing ``[UInt8]``.
+/// A ``pthread_rwlock_t`` protects all access to the backing store.
 /// Multiple readers (matching tasks) can hold the read lock concurrently;
 /// the single writer (``StdinReader``) acquires an exclusive write lock only
 /// for the duration of each append — typically microseconds per line.
-/// This prevents a data race where ``Array.append`` reallocates the backing
-/// storage while a concurrent reader holds an ``UnsafeBufferPointer`` into it.
 final class TextBuffer: @unchecked Sendable {
+    #if MmapBuffer
+    private let storage: MmapBuffer
+    #else
     /// Raw UTF-8 bytes of all lines, concatenated without separators.
     private var bytes: [UInt8] = []
+    #endif
 
     /// Read-write lock: concurrent readers, exclusive writer.
     private let rwlock: UnsafeMutablePointer<pthread_rwlock_t>
@@ -32,7 +41,11 @@ final class TextBuffer: @unchecked Sendable {
         rwlock = .allocate(capacity: 1)
         rwlock.initialize(to: pthread_rwlock_t())
         pthread_rwlock_init(rwlock, nil)
+        #if MmapBuffer
+        storage = MmapBuffer()
+        #else
         bytes.reserveCapacity(1 << 20)   // 1 MB initial reservation
+        #endif
     }
 
     deinit {
@@ -45,6 +58,10 @@ final class TextBuffer: @unchecked Sendable {
     func append(_ text: String) -> (offset: UInt32, length: UInt32) {
         pthread_rwlock_wrlock(rwlock)
         defer { pthread_rwlock_unlock(rwlock) }
+        #if MmapBuffer
+        let (off, len) = storage.append(text)
+        return (UInt32(off), UInt32(len))
+        #else
         let offset = UInt32(bytes.count)
         // withContiguousStorageIfAvailable avoids an intermediate Array copy
         // for the common case where the String's UTF-8 view is already contiguous.
@@ -57,6 +74,7 @@ final class TextBuffer: @unchecked Sendable {
             return UInt32(arr.count)
         }()
         return (offset, length)
+        #endif
     }
 
     /// Append a slice of a raw byte buffer directly — no ``String`` is created.
@@ -64,9 +82,15 @@ final class TextBuffer: @unchecked Sendable {
     func appendRaw(_ src: UnsafeBufferPointer<UInt8>, offset: Int, length: Int) -> (offset: UInt32, length: UInt32) {
         pthread_rwlock_wrlock(rwlock)
         defer { pthread_rwlock_unlock(rwlock) }
+        #if MmapBuffer
+        let (off, len) = storage.append(
+            from: src.baseAddress!, srcOffset: offset, length: length)
+        return (UInt32(off), UInt32(len))
+        #else
         let writeOffset = UInt32(bytes.count)
         bytes.append(contentsOf: UnsafeBufferPointer(start: src.baseAddress! + offset, count: length))
         return (writeOffset, UInt32(length))
+        #endif
     }
 
     /// Return a ``String`` view of the region ``[offset, offset+length)``.
@@ -74,10 +98,16 @@ final class TextBuffer: @unchecked Sendable {
     func string(at offset: UInt32, length: UInt32) -> String {
         pthread_rwlock_rdlock(rwlock)
         defer { pthread_rwlock_unlock(rwlock) }
+        #if MmapBuffer
+        let buf = storage.bufferPointer
+        let start = buf.baseAddress! + Int(offset)
+        return String(decoding: UnsafeBufferPointer(start: start, count: Int(length)), as: UTF8.self)
+        #else
         return bytes.withUnsafeBufferPointer { buf in
             let start = buf.baseAddress! + Int(offset)
             return String(decoding: UnsafeBufferPointer(start: start, count: Int(length)), as: UTF8.self)
         }
+        #endif
     }
 
     /// Execute *body* with an ``UnsafeBufferPointer`` over the entire byte store.
@@ -87,16 +117,26 @@ final class TextBuffer: @unchecked Sendable {
     func withBytes<R>(_ body: (UnsafeBufferPointer<UInt8>) throws -> R) rethrows -> R {
         pthread_rwlock_rdlock(rwlock)
         defer { pthread_rwlock_unlock(rwlock) }
+        #if MmapBuffer
+        return try body(storage.bufferPointer)
+        #else
         return try bytes.withUnsafeBufferPointer(body)
+        #endif
     }
 
-    /// Reallocate the backing store at exactly ``count`` capacity.
-    /// Call once after the last append (i.e. after stdin EOF) to reclaim the
-    /// ~30 % headroom that Array's doubling growth leaves behind.
+    /// Reclaim unused memory after the last append (stdin EOF).
+    ///
+    /// With ``MmapBuffer``: releases pages beyond the written region back to
+    /// the OS via ``madvise``, actually reducing reported RSS.
+    /// Without: attempts to reallocate the backing array at exact capacity.
     func shrinkToFit() {
         pthread_rwlock_wrlock(rwlock)
         defer { pthread_rwlock_unlock(rwlock) }
+        #if MmapBuffer
+        storage.releaseUnusedPages()
+        #else
         guard bytes.capacity > bytes.count else { return }
         bytes = Array(bytes)
+        #endif
     }
 }

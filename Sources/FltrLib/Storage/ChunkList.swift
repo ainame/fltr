@@ -51,7 +51,12 @@ final class ChunkStore {
             tail = Chunk()
         }
         guard frozen.capacity > frozen.count else { return }
-        frozen = Array(frozen)
+        // Array(_:) doesn't reliably shrink in Swift — create a fresh array
+        // with exact capacity to reclaim the ~30% growth headroom.
+        var shrunk: [Chunk] = []
+        shrunk.reserveCapacity(frozen.count)
+        shrunk.append(contentsOf: frozen)
+        frozen = shrunk
     }
 }
 

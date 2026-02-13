@@ -6,6 +6,9 @@ let package = Package(
     platforms: [
         .macOS(.v26),
     ],
+    traits: [
+        .trait(name: "MmapBuffer", description: "Use mmap-based TextBuffer for reduced RSS on macOS"),
+    ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-system", from: "1.4.0"),
