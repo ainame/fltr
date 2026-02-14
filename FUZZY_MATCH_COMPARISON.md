@@ -23,7 +23,7 @@ Throughput and quality were measured for:
 bash FuzzyMatch/Comparison/run-benchmarks.sh --fm-ed --iterations 5
 
 # fltr throughput
-swift run -c release comparison-bench-fltr \
+swift run -c release --package-path Benchmarks comparison-bench-fltr \
   --tsv FuzzyMatch/Resources/instruments-export.tsv \
   --queries FuzzyMatch/Resources/queries.tsv \
   --iterations 5
@@ -59,7 +59,7 @@ cat /tmp/quality-queries-input.tsv \
   > /tmp/quality-fuzzymatch-ed.tsv
 
 cat /tmp/quality-queries-input.tsv \
-  | swift run -c release comparison-quality-fltr FuzzyMatch/Resources/instruments-export.tsv \
+  | swift run -c release --package-path Benchmarks comparison-quality-fltr FuzzyMatch/Resources/instruments-export.tsv \
   > /tmp/quality-fltr.tsv
 ```
 

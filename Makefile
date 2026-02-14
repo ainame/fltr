@@ -62,8 +62,8 @@ profile: release
 
 # Usage: make benchmark COUNT=500000 MODE=all RUNS=5 WARMUP=2 SEED=1337
 benchmark: release
-	swift build -c release --target matcher-benchmark
-	.build/release/matcher-benchmark \
+	swift build -c release --package-path Benchmarks --target matcher-benchmark
+	Benchmarks/.build/release/matcher-benchmark \
 		--count $(COUNT) \
 		--mode $(MODE) \
 		--runs $(RUNS) \

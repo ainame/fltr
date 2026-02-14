@@ -149,21 +149,21 @@ Key optimizations implemented:
 When changing matcher/engine code, run the release benchmark with at least 500k items and compare medians:
 
 ```bash
-swift build -c release --target matcher-benchmark
-.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2
+swift build -c release --package-path Benchmarks --target matcher-benchmark
+Benchmarks/.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2
 ```
 
 Recommended workflow for agents (before/after comparison):
 
 1) Run baseline and save output:
 ```bash
-.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.before.txt
+Benchmarks/.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.before.txt
 ```
 
 2) Apply changes, rebuild, rerun with the same arguments:
 ```bash
-swift build -c release --target matcher-benchmark
-.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.after.txt
+swift build -c release --package-path Benchmarks --target matcher-benchmark
+Benchmarks/.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.after.txt
 ```
 
 3) Compare the median/avg lines (engine + matcher) and report deltas:
