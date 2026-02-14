@@ -61,15 +61,49 @@ public struct FuzzyMatcher: Sendable {
         backend.makeScratch()
     }
 
-    /// High-performance match using prepared pattern and explicit buffer.
-    /// Handles multi-token (space-separated AND) matching.
-    ///
-    /// - Parameters:
-    ///   - prepared: Pre-processed pattern (created once per query)
-    ///   - textBuf: Pre-sliced view into a TextBuffer
-    ///   - buffer: Reusable scoring buffer (one per thread/task)
-    /// - Returns: Match result or nil if no match
-    public func match(
+    /// High-performance rank-only match using prepared pattern and explicit buffer.
+    /// This is the hot path used by the matching engine.
+    public func matchForRank(
+        _ prepared: PreparedPattern,
+        textBuf: UnsafeBufferPointer<UInt8>,
+        buffer: inout MatcherScratch
+    ) -> RankMatch? {
+        guard !prepared.lowercasedBytes.isEmpty else {
+            return RankMatch(score: 0, minBegin: 0)
+        }
+
+        // Single token: direct match
+        if !prepared.isMultiToken {
+            return backend.matchRank(prepared: prepared, textBuf: textBuf, scratch: buffer)
+        }
+
+        // Multi-token: match each token (all must match for AND behavior)
+        var totalScore: Int16 = 0
+        var minBegin = UInt16.max
+
+        for tokenRange in prepared.tokenRanges {
+            let tokenBytes = Array(prepared.lowercasedBytes[tokenRange])
+            let tokenPrepared = PreparedPattern(
+                pattern: String(decoding: tokenBytes, as: UTF8.self),
+                caseSensitive: prepared.caseSensitive
+            )
+
+            guard let result = backend.matchRank(prepared: tokenPrepared, textBuf: textBuf, scratch: buffer) else {
+                return nil
+            }
+            totalScore += result.score
+            minBegin = min(minBegin, result.minBegin)
+        }
+
+        if minBegin == UInt16.max {
+            minBegin = 0
+        }
+        return RankMatch(score: totalScore, minBegin: minBegin)
+    }
+
+    /// High-performance highlight match using prepared pattern and explicit buffer.
+    /// Computes full character positions and is intended for cold paths only.
+    public func matchForHighlight(
         _ prepared: PreparedPattern,
         textBuf: UnsafeBufferPointer<UInt8>,
         buffer: inout MatcherScratch
@@ -78,26 +112,21 @@ public struct FuzzyMatcher: Sendable {
             return MatchResult(score: 0, positions: [])
         }
 
-        // Single token: direct match
         if !prepared.isMultiToken {
-            return backend.match(prepared: prepared, textBuf: textBuf, scratch: buffer)
+            return backend.matchHighlight(prepared: prepared, textBuf: textBuf, scratch: buffer)
         }
 
-        // Multi-token: match each token (all must match for AND behavior)
         var totalScore: Int16 = 0
         var allPositions: [UInt16] = []
 
         for tokenRange in prepared.tokenRanges {
-            // Create a temporary PreparedPattern for this token
-            // (already lowercased, so we can reuse the pre-processed bytes)
             let tokenBytes = Array(prepared.lowercasedBytes[tokenRange])
             let tokenPrepared = PreparedPattern(
                 pattern: String(decoding: tokenBytes, as: UTF8.self),
                 caseSensitive: prepared.caseSensitive
             )
 
-            // Match using the prepared API
-            guard let result = backend.match(prepared: tokenPrepared, textBuf: textBuf, scratch: buffer) else {
+            guard let result = backend.matchHighlight(prepared: tokenPrepared, textBuf: textBuf, scratch: buffer) else {
                 return nil
             }
             totalScore += result.score
@@ -108,7 +137,6 @@ public struct FuzzyMatcher: Sendable {
             return MatchResult(score: 0, positions: [])
         }
 
-        // Sort and deduplicate in-place
         allPositions.sort()
         var writeIndex = 1
         for readIndex in 1..<allPositions.count {
@@ -122,6 +150,15 @@ public struct FuzzyMatcher: Sendable {
         allPositions.removeLast(allPositions.count - writeIndex)
 
         return MatchResult(score: totalScore, positions: allPositions)
+    }
+
+    /// Backward-compatible alias for highlight matching with prepared patterns.
+    public func match(
+        _ prepared: PreparedPattern,
+        textBuf: UnsafeBufferPointer<UInt8>,
+        buffer: inout MatcherScratch
+    ) -> MatchResult? {
+        matchForHighlight(prepared, textBuf: textBuf, buffer: &buffer)
     }
 
     /// Match a pattern against text
@@ -233,26 +270,45 @@ public struct FuzzyMatcher: Sendable {
 ///   bits  0…15  unused (0)
 struct MatchedItem: Sendable {
     let item: Item
-    let matchResult: MatchResult
+    let rawScore: Int16
+    let minBegin: UInt16
     /// Precomputed rank key.  Compare with `rankLessThan(_:_:)`.
     let points: UInt64
 
     /// Hot-path init: *allBytes* is the live ``TextBuffer`` pointer (held by the
     /// caller's ``withBytes`` scope).  No ``String`` allocation.
-    init(item: Item, matchResult: MatchResult, scheme: SortScheme = .path, allBytes: UnsafeBufferPointer<UInt8>) {
+    init(item: Item, rankMatch: RankMatch, scheme: SortScheme = .path, allBytes: UnsafeBufferPointer<UInt8>) {
         self.item = item
-        self.matchResult = matchResult
+        self.rawScore = rankMatch.score
+        self.minBegin = rankMatch.minBegin
         self.points = MatchedItem.buildPoints(
             offset: Int(item.offset), length: Int(item.length),
-            matchResult: matchResult, scheme: scheme, allBytes: allBytes)
+            score: rankMatch.score, minBegin: rankMatch.minBegin, scheme: scheme, allBytes: allBytes)
     }
 
     /// Fast init with pre-computed points — used by the chunkBacked zero-alloc
     /// path where score is 0, positions are empty, and byPathname is irrelevant.
-    init(item: Item, matchResult: MatchResult, points: UInt64) {
+    init(item: Item, score: Int16, minBegin: UInt16, points: UInt64) {
         self.item = item
-        self.matchResult = matchResult
+        self.rawScore = score
+        self.minBegin = minBegin
         self.points = points
+    }
+
+    /// Compatibility initializer used by tests/callers that still produce
+    /// full highlight results.
+    init(item: Item, matchResult: MatchResult, scheme: SortScheme = .path, allBytes: UnsafeBufferPointer<UInt8>) {
+        self.init(
+            item: item,
+            rankMatch: RankMatch(score: matchResult.score, minBegin: matchResult.positions.first ?? 0),
+            scheme: scheme,
+            allBytes: allBytes
+        )
+    }
+
+    /// Compatibility initializer with pre-computed points.
+    init(item: Item, matchResult: MatchResult, points: UInt64) {
+        self.init(item: item, score: matchResult.score, minBegin: matchResult.positions.first ?? 0, points: points)
     }
 
     /// Pack four UInt16 rank slots into a single UInt64.  Argument order
@@ -263,7 +319,7 @@ struct MatchedItem: Sendable {
     }
 
     var score: Int {
-        Int(matchResult.score)
+        Int(rawScore)
     }
 
     // MARK: - Rank-point construction  (mirrors fzf result.go : buildResult)
@@ -272,29 +328,29 @@ struct MatchedItem: Sendable {
     @inlinable
     static func buildPoints(
         offset: Int, length: Int,
-        matchResult: MatchResult, scheme: SortScheme,
+        score: Int16, minBegin: UInt16, scheme: SortScheme,
         allBytes: UnsafeBufferPointer<UInt8>
     ) -> UInt64 {
         let maxU16 = Int(UInt16.max)
 
         // --- byScore (bits 48…63) ---  higher score → lower value  (always active)
-        let byScore = UInt16(clamping: maxU16 - Int(matchResult.score))
+        let byScore = UInt16(clamping: maxU16 - Int(score))
 
         // --- byPathname (bits 32…47) ---  path scheme only
         // Find the last path separator at or before the match start.
         // a match right after a '/' (distance 1) ranks above one mid-segment.
         let byPathname: UInt16
         if case .path = scheme {
-            let minBegin = Int(matchResult.positions.first ?? 0)
+            let begin = Int(minBegin)
             var delimBeforeMatch = -1
             let base = allBytes.baseAddress! + offset
-            for idx in 0..<min(minBegin, length) {
+            for idx in 0..<min(begin, length) {
                 let ch = base[idx]
                 if ch == 0x2F || ch == 0x5C {   // '/' or '\'
                     delimBeforeMatch = idx
                 }
             }
-            byPathname = UInt16(clamping: minBegin - delimBeforeMatch)
+            byPathname = UInt16(clamping: begin - delimBeforeMatch)
         } else {
             byPathname = 0
         }

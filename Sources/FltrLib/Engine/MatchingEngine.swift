@@ -21,9 +21,8 @@ struct MatchingEngine: Sendable {
         guard !pattern.isEmpty else {
             // Score = 0, positions empty → points are (0, byLength, 0, maxU16).
             // Synthesise without opening the buffer.
-            let emptyResult = MatchResult(score: 0, positions: [])
             let all = items.map { item in
-                MatchedItem(item: item, matchResult: emptyResult,
+                MatchedItem(item: item, score: 0, minBegin: 0,
                             points: MatchedItem.packPoints(0, UInt16(clamping: Int(item.length)), 0, UInt16.max))
             }
             return ResultMerger(partitions: [all])
@@ -137,8 +136,8 @@ struct MatchingEngine: Sendable {
                                         start: allBytes.baseAddress! + Int(item.offset),
                                         count: Int(item.length)
                                     )
-                                    if let result = self.matcher.match(prepared, textBuf: slice, buffer: &scoringBuffer) {
-                                        chunkResults.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
+                                    if let result = self.matcher.matchForRank(prepared, textBuf: slice, buffer: &scoringBuffer) {
+                                        chunkResults.append(MatchedItem(item: item, rankMatch: result, scheme: self.matcher.scheme, allBytes: allBytes))
                                     }
                                 }
                             } else {
@@ -149,8 +148,8 @@ struct MatchingEngine: Sendable {
                                         start: allBytes.baseAddress! + Int(item.offset),
                                         count: Int(item.length)
                                     )
-                                    if let result = self.matcher.match(prepared, textBuf: slice, buffer: &scoringBuffer) {
-                                        chunkResults.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
+                                    if let result = self.matcher.matchForRank(prepared, textBuf: slice, buffer: &scoringBuffer) {
+                                        chunkResults.append(MatchedItem(item: item, rankMatch: result, scheme: self.matcher.scheme, allBytes: allBytes))
                                     }
                                 }
                             }
@@ -194,12 +193,11 @@ struct MatchingEngine: Sendable {
                 start: allBytes.baseAddress! + Int(item.offset),
                 count: Int(item.length)
             )
-            if let result = matcher.match(prepared, textBuf: slice, buffer: &scoringBuffer) {
-                matched.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
+            if let result = matcher.matchForRank(prepared, textBuf: slice, buffer: &scoringBuffer) {
+                matched.append(MatchedItem(item: item, rankMatch: result, scheme: matcher.scheme, allBytes: allBytes))
             }
         }
         matched.sort(by: rankLessThan)
         return matched
     }
 }
-

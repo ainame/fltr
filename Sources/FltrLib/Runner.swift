@@ -45,13 +45,28 @@ public struct Runner {
 
         let buf = cache.buffer
         var merger = await engine.matchChunksParallel(pattern: query, chunkList: chunkList, cache: chunkCache, buffer: buf)
+        let prepared = matcher.prepare(query)
+        var scratch = matcher.makeBuffer()
 
         let totalItems = await cache.count()
         print("[query='\(query)' scheme=\(options.scheme) matcher=\(options.matcherAlgorithm) results=\(merger.count)/\(totalItems)]")
         print("")
-        for (i, m) in merger.slice(0, 30).enumerated() {
-            let p = m.points
-            print("  #\(i + 1)  score=\(m.score)  pts=(\(p >> 48 & 0xFFFF),\(p >> 32 & 0xFFFF),\(p >> 16 & 0xFFFF),\(p & 0xFFFF))  pos=\(m.matchResult.positions)  \(m.item.text(in: buf))")
+        let top = merger.slice(0, 30)
+        buf.withBytes { allBytes in
+            for (i, m) in top.enumerated() {
+                let p = m.points
+                let positions: [UInt16]
+                if query.isEmpty {
+                    positions = []
+                } else {
+                    let slice = UnsafeBufferPointer(
+                        start: allBytes.baseAddress! + Int(m.item.offset),
+                        count: Int(m.item.length)
+                    )
+                    positions = matcher.matchForHighlight(prepared, textBuf: slice, buffer: &scratch)?.positions ?? []
+                }
+                print("  #\(i + 1)  score=\(m.score)  pts=(\(p >> 48 & 0xFFFF),\(p >> 32 & 0xFFFF),\(p >> 16 & 0xFFFF),\(p & 0xFFFF))  pos=\(positions)  \(m.item.text(in: buf))")
+            }
         }
     }
 

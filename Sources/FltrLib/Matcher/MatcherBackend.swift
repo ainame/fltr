@@ -39,7 +39,8 @@ protocol MatcherBackend: Sendable {
     var algorithm: MatcherAlgorithm { get }
     func prepare(_ pattern: String, caseSensitive: Bool) -> PreparedPattern
     func makeScratch() -> MatcherScratch
-    func match(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> MatchResult?
+    func matchRank(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> RankMatch?
+    func matchHighlight(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> MatchResult?
     func match(pattern: String, text: String, caseSensitive: Bool) -> MatchResult?
     func match(pattern: String, textBuf: UnsafeBufferPointer<UInt8>, caseSensitive: Bool) -> MatchResult?
 }
@@ -55,7 +56,11 @@ struct Utf8MatcherBackend: MatcherBackend {
         MatcherScratch()
     }
 
-    func match(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> MatchResult? {
+    func matchRank(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> RankMatch? {
+        Utf8FuzzyMatch.matchRank(prepared: prepared, textBuf: textBuf, buffer: &scratch.utf8Buffer)
+    }
+
+    func matchHighlight(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> MatchResult? {
         Utf8FuzzyMatch.match(prepared: prepared, textBuf: textBuf, buffer: &scratch.utf8Buffer)
     }
 
@@ -83,14 +88,22 @@ struct SwFastMatcherBackend: MatcherBackend {
         delegate.makeScratch()
     }
 
-    func match(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> MatchResult? {
+    func matchRank(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> RankMatch? {
         // Fast negative prefilter: if a required folded-byte bit from the query
         // is missing in candidate text, we can reject before DP.
         let textMask = foldedMask(textBuf, caseSensitive: prepared.caseSensitive)
         if (prepared.foldedByteMask & ~textMask) != 0 {
             return nil
         }
-        return delegate.match(prepared: prepared, textBuf: textBuf, scratch: scratch)
+        return delegate.matchRank(prepared: prepared, textBuf: textBuf, scratch: scratch)
+    }
+
+    func matchHighlight(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> MatchResult? {
+        let textMask = foldedMask(textBuf, caseSensitive: prepared.caseSensitive)
+        if (prepared.foldedByteMask & ~textMask) != 0 {
+            return nil
+        }
+        return delegate.matchHighlight(prepared: prepared, textBuf: textBuf, scratch: scratch)
     }
 
     func match(pattern: String, text: String, caseSensitive: Bool) -> MatchResult? {

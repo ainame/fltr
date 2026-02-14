@@ -244,6 +244,20 @@ public struct Utf8FuzzyMatch: Sendable {
         }
     }
 
+    /// Rank-only overload for hot-path sorting.
+    /// Returns score + first match position (minBegin), without exposing full
+    /// highlight positions to callers.
+    public static func matchRank(
+        prepared: PreparedPattern,
+        textBuf: UnsafeBufferPointer<UInt8>,
+        buffer: inout ScoringBuffer
+    ) -> RankMatch? {
+        guard let result = match(prepared: prepared, textBuf: textBuf, buffer: &buffer) else {
+            return nil
+        }
+        return RankMatch(score: result.score, minBegin: result.positions.first ?? 0)
+    }
+
     /// Zero-copy overload: *textBuf* is a pre-sliced view into a ``TextBuffer``.
     /// Avoids constructing a ``String`` on the hot path.
     public static func match(pattern: String, textBuf: UnsafeBufferPointer<UInt8>, caseSensitive: Bool = false) -> MatchResult? {

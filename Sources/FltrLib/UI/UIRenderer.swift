@@ -14,7 +14,13 @@ struct UIRenderer: Sendable {
     /// Assemble complete frame buffer for rendering.
     /// *visibleItems* is the already-sliced window from the caller (UIController
     /// materialises it from the ResultMerger so we never need a mutable merger here).
-    func assembleFrame(state: UIState, visibleItems: [MatchedItem], context: RenderContext, buffer: TextBuffer) -> String {
+    func assembleFrame(
+        state: UIState,
+        visibleItems: [MatchedItem],
+        highlightPositions: [Item.Index: [UInt16]],
+        context: RenderContext,
+        buffer: TextBuffer
+    ) -> String {
         let (rows, cols) = (context.rows, context.cols)
 
         // Calculate available rows for items
@@ -48,6 +54,7 @@ struct UIRenderer: Sendable {
         // Render matched items (positions each line)
         frame += renderItemList(
             visibleItems: visibleItems,
+            highlightPositions: highlightPositions,
             selectedIndex: state.selectedIndex,
             selectedItems: state.selectedItems,
             scrollOffset: state.scrollOffset,
@@ -118,6 +125,7 @@ struct UIRenderer: Sendable {
     /// only to map display indices back to global indices for selection checks.
     private func renderItemList(
         visibleItems: [MatchedItem],
+        highlightPositions: [Item.Index: [UInt16]],
         selectedIndex: Int,
         selectedItems: Set<Item.Index>,
         scrollOffset: Int,
@@ -155,7 +163,7 @@ struct UIRenderer: Sendable {
             // Truncate and highlight
             let displayText = TextRenderer.truncateAndHighlight(
                 text,
-                positions: matchedItem.matchResult.positions,
+                positions: highlightPositions[matchedItem.item.index] ?? [],
                 width: availableWidth
             )
 

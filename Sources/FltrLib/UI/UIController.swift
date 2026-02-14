@@ -40,6 +40,7 @@ actor UIController {
     private var renderScheduled = false  // coalesces concurrent render requests
 
     private var mergerCache = MergerCache()
+    private var highlightResolver: HighlightResolver
 
     // Per-chunk result cache shared across TaskGroup partitions; internally locked.
     private let chunkCache = ChunkCache()
@@ -62,6 +63,7 @@ actor UIController {
 
         self.preview = PreviewState(command: previewCommand, useFloating: useFloatingPreview)
         self.renderer = UIRenderer(maxHeight: maxHeight, multiSelect: multiSelect)
+        self.highlightResolver = HighlightResolver(matcher: matcher)
         self.inputHandler = InputHandler(
             multiSelect: multiSelect,
             hasPreview: previewCommand != nil,
@@ -422,7 +424,23 @@ actor UIController {
         // Materialise the visible window here; assembleFrame receives state
         // by value and cannot call mutating Merger methods itself.
         let visibleItems = state.merger.slice(state.scrollOffset, state.scrollOffset + displayHeight)
-        var buffer = renderer.assembleFrame(state: state, visibleItems: visibleItems, context: context, buffer: textBuffer)
+        var highlightPositions: [Item.Index: [UInt16]] = [:]
+        highlightPositions.reserveCapacity(visibleItems.count)
+        for matchedItem in visibleItems {
+            highlightPositions[matchedItem.item.index] = highlightResolver.positions(
+                query: state.query,
+                item: matchedItem.item,
+                textBuffer: textBuffer
+            )
+        }
+
+        var buffer = renderer.assembleFrame(
+            state: state,
+            visibleItems: visibleItems,
+            highlightPositions: highlightPositions,
+            context: context,
+            buffer: textBuffer
+        )
 
         if preview.showSplit {
             let startRow = 3
