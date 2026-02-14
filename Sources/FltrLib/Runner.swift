@@ -8,14 +8,16 @@ public struct Options {
     public let preview: String?
     public let previewFloat: String?
     public let scheme: SortScheme
+    public let matcherAlgorithm: MatcherAlgorithm
 
-    public init(height: Int?, multi: Bool, caseSensitive: Bool, preview: String?, previewFloat: String?, scheme: SortScheme = .path) {
+    public init(height: Int?, multi: Bool, caseSensitive: Bool, preview: String?, previewFloat: String?, scheme: SortScheme = .path, matcherAlgorithm: MatcherAlgorithm = .utf8) {
         self.height = height
         self.multi = multi
         self.caseSensitive = caseSensitive
         self.preview = preview
         self.previewFloat = previewFloat
         self.scheme = scheme
+        self.matcherAlgorithm = matcherAlgorithm
     }
 }
 
@@ -36,7 +38,7 @@ public struct Runner {
         // Wait for stdin to finish — no timeout, we need the full dataset
         await readTask.value
 
-        let matcher = FuzzyMatcher(caseSensitive: options.caseSensitive, scheme: options.scheme)
+        let matcher = FuzzyMatcher(caseSensitive: options.caseSensitive, scheme: options.scheme, algorithm: options.matcherAlgorithm)
         let engine = MatchingEngine(matcher: matcher)
         let chunkList = await cache.snapshotChunkList()
         let chunkCache = ChunkCache()
@@ -45,7 +47,7 @@ public struct Runner {
         var merger = await engine.matchChunksParallel(pattern: query, chunkList: chunkList, cache: chunkCache, buffer: buf)
 
         let totalItems = await cache.count()
-        print("[query='\(query)' scheme=\(options.scheme) results=\(merger.count)/\(totalItems)]")
+        print("[query='\(query)' scheme=\(options.scheme) matcher=\(options.matcherAlgorithm) results=\(merger.count)/\(totalItems)]")
         print("")
         for (i, m) in merger.slice(0, 30).enumerated() {
             let p = m.points
@@ -72,7 +74,7 @@ public struct Runner {
 
         // Initialize UI components
         let terminal = RawTerminal()
-        let matcher = FuzzyMatcher(caseSensitive: options.caseSensitive, scheme: options.scheme)
+        let matcher = FuzzyMatcher(caseSensitive: options.caseSensitive, scheme: options.scheme, algorithm: options.matcherAlgorithm)
         let ui = UIController(
             terminal: terminal,
             matcher: matcher,

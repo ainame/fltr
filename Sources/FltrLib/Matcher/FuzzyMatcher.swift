@@ -26,10 +26,19 @@ public enum SortScheme: Sendable {
 struct FuzzyMatcher: Sendable {
     let caseSensitive: Bool
     let scheme: SortScheme
+    let algorithm: MatcherAlgorithm
+    private let backend: any MatcherBackend
 
-    init(caseSensitive: Bool = false, scheme: SortScheme = .path) {
+    init(caseSensitive: Bool = false, scheme: SortScheme = .path, algorithm: MatcherAlgorithm = .utf8) {
         self.caseSensitive = caseSensitive
         self.scheme = scheme
+        self.algorithm = algorithm
+        switch algorithm {
+        case .utf8:
+            self.backend = Utf8MatcherBackend()
+        case .swfast:
+            self.backend = SwFastMatcherBackend()
+        }
     }
 
     /// Prepare a pattern for repeated matching. Create once per query, reuse across all candidates.
@@ -44,12 +53,12 @@ struct FuzzyMatcher: Sendable {
     /// }
     /// ```
     func prepare(_ pattern: String) -> PreparedPattern {
-        PreparedPattern(pattern: pattern, caseSensitive: caseSensitive)
+        backend.prepare(pattern, caseSensitive: caseSensitive)
     }
 
     /// Create a scoring buffer. Call once per thread/task.
-    func makeBuffer() -> Utf8FuzzyMatch.ScoringBuffer {
-        Utf8FuzzyMatch.makeBuffer()
+    func makeBuffer() -> MatcherScratch {
+        backend.makeScratch()
     }
 
     /// High-performance match using prepared pattern and explicit buffer.
@@ -63,7 +72,7 @@ struct FuzzyMatcher: Sendable {
     func match(
         _ prepared: PreparedPattern,
         textBuf: UnsafeBufferPointer<UInt8>,
-        buffer: inout Utf8FuzzyMatch.ScoringBuffer
+        buffer: inout MatcherScratch
     ) -> MatchResult? {
         guard !prepared.lowercasedBytes.isEmpty else {
             return MatchResult(score: 0, positions: [])
@@ -71,7 +80,7 @@ struct FuzzyMatcher: Sendable {
 
         // Single token: direct match
         if !prepared.isMultiToken {
-            return Utf8FuzzyMatch.match(prepared: prepared, textBuf: textBuf, buffer: &buffer)
+            return backend.match(prepared: prepared, textBuf: textBuf, scratch: buffer)
         }
 
         // Multi-token: match each token (all must match for AND behavior)
@@ -88,11 +97,7 @@ struct FuzzyMatcher: Sendable {
             )
 
             // Match using the prepared API
-            guard let result = Utf8FuzzyMatch.match(
-                prepared: tokenPrepared,
-                textBuf: textBuf,
-                buffer: &buffer
-            ) else {
+            guard let result = backend.match(prepared: tokenPrepared, textBuf: textBuf, scratch: buffer) else {
                 return nil
             }
             totalScore += result.score
@@ -128,7 +133,7 @@ struct FuzzyMatcher: Sendable {
 
         // Fast path: no space → single token, skip split entirely
         guard pattern.utf8.contains(0x20) else {
-            return Utf8FuzzyMatch.match(pattern: pattern, text: text, caseSensitive: caseSensitive)
+            return backend.match(pattern: pattern, text: text, caseSensitive: caseSensitive)
         }
 
         // Multi-token: split and AND-match
@@ -137,7 +142,7 @@ struct FuzzyMatcher: Sendable {
             return MatchResult(score: 0, positions: [])
         }
         if tokens.count == 1 {
-            return Utf8FuzzyMatch.match(pattern: String(tokens[0]), text: text, caseSensitive: caseSensitive)
+            return backend.match(pattern: String(tokens[0]), text: text, caseSensitive: caseSensitive)
         }
 
         // Multiple tokens - all must match (AND behavior)
@@ -145,7 +150,7 @@ struct FuzzyMatcher: Sendable {
         var allPositions: [UInt16] = []
 
         for token in tokens {
-            guard let result = Utf8FuzzyMatch.match(pattern: String(token), text: text, caseSensitive: caseSensitive) else {
+            guard let result = backend.match(pattern: String(token), text: text, caseSensitive: caseSensitive) else {
                 // If any token doesn't match, the whole pattern doesn't match
                 return nil
             }
@@ -180,33 +185,20 @@ struct FuzzyMatcher: Sendable {
             return MatchResult(score: 0, positions: [])
         }
 
-        let patSpan = pattern.utf8.span
-
-        // Fast path: no space → single token, skip the walk entirely.
-        var hasSpace = false
-        for i in 0..<patSpan.count { if patSpan[i] == 0x20 { hasSpace = true; break } }
-        guard hasSpace else {
-            return Utf8FuzzyMatch.match(patternSpan: patSpan, textBuf: textBuf, caseSensitive: caseSensitive)
+        // Fast path: no space → single token, skip split entirely.
+        guard pattern.utf8.contains(0x20) else {
+            return backend.match(pattern: pattern, textBuf: textBuf, caseSensitive: caseSensitive)
         }
 
-        // Multi-token: walk the span once, slicing on spaces.
+        // Multi-token: split and AND-match.
         var totalScore: Int16 = 0
         var allPositions: [UInt16] = []
-        var tokenStart = 0
-
-        for i in 0...patSpan.count {   // iterate one past end to flush last token
-            let isEnd = (i == patSpan.count)
-            if isEnd || patSpan[i] == 0x20 {
-                if i > tokenStart {   // skip runs of spaces
-                    let tokenSpan = patSpan.extracting(tokenStart..<i)
-                    guard let result = Utf8FuzzyMatch.match(patternSpan: tokenSpan, textBuf: textBuf, caseSensitive: caseSensitive) else {
-                        return nil
-                    }
-                    totalScore += result.score
-                    allPositions.append(contentsOf: result.positions)
-                }
-                tokenStart = i + 1
+        for token in pattern.split(separator: " ", omittingEmptySubsequences: true) {
+            guard let result = backend.match(pattern: String(token), textBuf: textBuf, caseSensitive: caseSensitive) else {
+                return nil
             }
+            totalScore += result.score
+            allPositions.append(contentsOf: result.positions)
         }
 
         guard !allPositions.isEmpty else {

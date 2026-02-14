@@ -184,7 +184,7 @@ struct MatchingEngine: Sendable {
 
     /// Match a slice of items using a pre-opened buffer pointer.
     /// Caller must hold the buffer pointer alive for the duration.
-    private func matchItemsFromBuffer(prepared: PreparedPattern, items: [Item], allBytes: UnsafeBufferPointer<UInt8>, scoringBuffer: inout Utf8FuzzyMatch.ScoringBuffer) -> [MatchedItem] {
+    private func matchItemsFromBuffer(prepared: PreparedPattern, items: [Item], allBytes: UnsafeBufferPointer<UInt8>, scoringBuffer: inout MatcherScratch) -> [MatchedItem] {
         var matched: [MatchedItem] = []
         for item in items {
             if matched.count % 100 == 0 {
@@ -202,5 +202,4 @@ struct MatchingEngine: Sendable {
         return matched
     }
 }
-
 
