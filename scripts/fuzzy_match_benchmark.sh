@@ -15,7 +15,6 @@ Default behavior:
 Options:
   --iterations N     Throughput iterations for benchmark runners (default: 5)
   --fm-mode MODE     FuzzyMatch mode: ed, sw, or both (default: both)
-  --fltr-matcher M   fltr matcher backend: utf8 or swfast (default: swfast)
   --skip-build       Reuse existing builds where possible
   --no-throughput    Skip throughput run
   --no-quality       Skip quality run
@@ -40,7 +39,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 ITERATIONS=5
 FM_MODE="both"
-FLTR_MATCHER="swfast"
 SKIP_BUILD=false
 RUN_THROUGHPUT=true
 RUN_QUALITY=true
@@ -53,10 +51,6 @@ while [[ $# -gt 0 ]]; do
       ;;
     --fm-mode)
       FM_MODE="${2:-}"
-      shift 2
-      ;;
-    --fltr-matcher)
-      FLTR_MATCHER="${2:-}"
       shift 2
       ;;
     --skip-build)
@@ -92,14 +86,6 @@ case "$FM_MODE" in
   ed|sw|both) ;;
   *)
     echo "--fm-mode must be one of: ed, sw, both" >&2
-    exit 1
-    ;;
-esac
-
-case "$FLTR_MATCHER" in
-  utf8|swfast) ;;
-  *)
-    echo "--fltr-matcher must be one of: utf8, swfast" >&2
     exit 1
     ;;
 esac
@@ -179,7 +165,6 @@ if $RUN_THROUGHPUT; then
   swift run -c release --package-path "$BENCH_PKG_PATH" comparison-bench-fltr \
     --tsv "$TSV_PATH" \
     --queries "$QUERIES_PATH" \
-    --matcher "$FLTR_MATCHER" \
     --iterations "$ITERATIONS" | tee /tmp/bench-fltr-latest.txt
 fi
 
@@ -205,7 +190,7 @@ if $RUN_QUALITY; then
   echo "==> Running fltr quality benchmark"
   awk -F'\t' '{print $1"\t"$2}' "$QUERIES_PATH" > /tmp/quality-queries-input.tsv
   cat /tmp/quality-queries-input.tsv \
-    | swift run -c release --package-path "$BENCH_PKG_PATH" comparison-quality-fltr "$TSV_PATH" --matcher "$FLTR_MATCHER" \
+    | swift run -c release --package-path "$BENCH_PKG_PATH" comparison-quality-fltr "$TSV_PATH" \
     > /tmp/quality-fltr-latest.tsv
 
   python3 - <<'PY'
@@ -241,7 +226,7 @@ with open(dst, 'w') as f:
 PY
 fi
 
-RUN_THROUGHPUT="$RUN_THROUGHPUT" RUN_QUALITY="$RUN_QUALITY" FLTR_MATCHER="$FLTR_MATCHER" python3 - <<'PY'
+RUN_THROUGHPUT="$RUN_THROUGHPUT" RUN_QUALITY="$RUN_QUALITY" python3 - <<'PY'
 import csv
 import json
 import os
@@ -265,7 +250,7 @@ quality_files = OrderedDict([
     ('fzf', '/tmp/quality-fzf-latest.json'),
 ])
 
-fltr_label = f"fltr({os.environ.get('FLTR_MATCHER', 'utf8')})"
+fltr_label = "fltr(fuzzymatch)"
 
 with open(queries_path) as f:
     queries = []

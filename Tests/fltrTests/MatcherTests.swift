@@ -288,7 +288,7 @@ func whitespaceTrimmingAndEmpty() {
 
 @Test("FuzzyMatch backend keeps AND semantics for split query words")
 func fuzzyMatchBackendANDSemantics() {
-    let matcher = FuzzyMatcher(algorithm: .fuzzymatch)
+    let matcher = FuzzyMatcher()
     #expect(matcher.match(pattern: "abc def", text: "xxabc_yydef_zz") != nil)
     #expect(matcher.match(pattern: "abc def", text: "xxabc_only_zz") == nil)
     #expect(matcher.match(pattern: "abc def", text: "yydef_only_zz") == nil)
@@ -296,7 +296,7 @@ func fuzzyMatchBackendANDSemantics() {
 
 @Test("FuzzyMatch backend rank/highlight paths both enforce AND")
 func fuzzyMatchBackendANDForRankAndHighlight() {
-    let matcher = FuzzyMatcher(algorithm: .fuzzymatch)
+    let matcher = FuzzyMatcher()
 
     let both = matchRankAndHighlight(matcher: matcher, query: "abc def", text: "00abcxxdef00")
     #expect(both.0 != nil)
@@ -310,7 +310,7 @@ func fuzzyMatchBackendANDForRankAndHighlight() {
 
 @Test("FuzzyMatch backend ignores empty tokens from multiple spaces")
 func fuzzyMatchBackendMultipleSpacesStillAND() {
-    let matcher = FuzzyMatcher(algorithm: .fuzzymatch)
+    let matcher = FuzzyMatcher()
     #expect(matcher.match(pattern: "abc   def", text: "abc...def") != nil)
     #expect(matcher.match(pattern: "abc   def", text: "abc...ghi") == nil)
 }

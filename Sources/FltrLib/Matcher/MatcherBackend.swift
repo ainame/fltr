@@ -1,37 +1,6 @@
 import Foundation
 import FuzzyMatch
 
-/// Selects which matcher backend powers fuzzy scoring.
-public enum MatcherAlgorithm: Sendable, CustomStringConvertible {
-    case utf8
-    case swfast
-    case fuzzymatch
-
-    public static func parse(_ s: String) -> MatcherAlgorithm? {
-        switch s.lowercased() {
-        case "utf8":
-            return .utf8
-        case "swfast":
-            return .swfast
-        case "fuzzymatch":
-            return .fuzzymatch
-        default:
-            return nil
-        }
-    }
-
-    public var description: String {
-        switch self {
-        case .utf8:
-            return "utf8"
-        case .swfast:
-            return "swfast"
-        case .fuzzymatch:
-            return "fuzzymatch"
-        }
-    }
-}
-
 /// Per-task scratch storage for matcher backends.
 /// Backends may reuse internal buffers through this object.
 public final class MatcherScratch: @unchecked Sendable {
@@ -48,7 +17,6 @@ public final class MatcherScratch: @unchecked Sendable {
 
 /// Swappable backend contract for fuzzy matching engines.
 protocol MatcherBackend: Sendable {
-    var algorithm: MatcherAlgorithm { get }
     func prepare(_ pattern: String, caseSensitive: Bool) -> PreparedPattern
     func makeScratch() -> MatcherScratch
     func matchRank(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> RankMatch?
@@ -58,8 +26,6 @@ protocol MatcherBackend: Sendable {
 }
 
 struct FuzzyMatchBackend: MatcherBackend {
-    let algorithm: MatcherAlgorithm = .fuzzymatch
-
     // We delegate tokenization/AND semantics to Fltr's FuzzyMatcher layer.
     private let matcher = FuzzyMatch.FuzzyMatcher(
         config: FuzzyMatch.MatchConfig(minScore: 0.0, algorithm: .smithWaterman())
@@ -172,92 +138,5 @@ struct FuzzyMatchBackend: MatcherBackend {
         }
 
         return positions
-    }
-}
-
-/// Backward-compatible algorithm alias.
-/// `utf8` now routes through the upstream FuzzyMatch kernel.
-struct Utf8MatcherBackend: MatcherBackend {
-    let algorithm: MatcherAlgorithm = .utf8
-    private let delegate = FuzzyMatchBackend()
-
-    func prepare(_ pattern: String, caseSensitive: Bool) -> PreparedPattern {
-        delegate.prepare(pattern, caseSensitive: caseSensitive)
-    }
-
-    func makeScratch() -> MatcherScratch {
-        delegate.makeScratch()
-    }
-
-    func matchRank(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> RankMatch? {
-        delegate.matchRank(prepared: prepared, textBuf: textBuf, scratch: scratch)
-    }
-
-    func matchHighlight(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> MatchResult? {
-        delegate.matchHighlight(prepared: prepared, textBuf: textBuf, scratch: scratch)
-    }
-
-    func match(pattern: String, text: String, caseSensitive: Bool) -> MatchResult? {
-        delegate.match(pattern: pattern, text: text, caseSensitive: caseSensitive)
-    }
-
-    func match(pattern: String, textBuf: UnsafeBufferPointer<UInt8>, caseSensitive: Bool) -> MatchResult? {
-        delegate.match(pattern: pattern, textBuf: textBuf, caseSensitive: caseSensitive)
-    }
-}
-
-/// Backward-compatible algorithm alias.
-/// `swfast` routes through the upstream FuzzyMatch kernel with a quick bitmask prefilter.
-struct SwFastMatcherBackend: MatcherBackend {
-    let algorithm: MatcherAlgorithm = .swfast
-    private let delegate = FuzzyMatchBackend()
-
-    func prepare(_ pattern: String, caseSensitive: Bool) -> PreparedPattern {
-        delegate.prepare(pattern, caseSensitive: caseSensitive)
-    }
-
-    func makeScratch() -> MatcherScratch {
-        delegate.makeScratch()
-    }
-
-    func matchRank(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> RankMatch? {
-        let textMask = foldedMask(textBuf, caseSensitive: prepared.caseSensitive)
-        if (prepared.foldedByteMask & ~textMask) != 0 {
-            return nil
-        }
-        return delegate.matchRank(prepared: prepared, textBuf: textBuf, scratch: scratch)
-    }
-
-    func matchHighlight(prepared: PreparedPattern, textBuf: UnsafeBufferPointer<UInt8>, scratch: MatcherScratch) -> MatchResult? {
-        let textMask = foldedMask(textBuf, caseSensitive: prepared.caseSensitive)
-        if (prepared.foldedByteMask & ~textMask) != 0 {
-            return nil
-        }
-        return delegate.matchHighlight(prepared: prepared, textBuf: textBuf, scratch: scratch)
-    }
-
-    func match(pattern: String, text: String, caseSensitive: Bool) -> MatchResult? {
-        delegate.match(pattern: pattern, text: text, caseSensitive: caseSensitive)
-    }
-
-    func match(pattern: String, textBuf: UnsafeBufferPointer<UInt8>, caseSensitive: Bool) -> MatchResult? {
-        delegate.match(pattern: pattern, textBuf: textBuf, caseSensitive: caseSensitive)
-    }
-
-    @inline(__always)
-    private func foldedMask(_ textBuf: UnsafeBufferPointer<UInt8>, caseSensitive: Bool) -> UInt64 {
-        var mask: UInt64 = 0
-        if caseSensitive {
-            for b in textBuf {
-                mask |= (UInt64(1) << UInt64(b & 63))
-            }
-            return mask
-        }
-
-        for b in textBuf {
-            let lb: UInt8 = (b >= 0x41 && b <= 0x5A) ? (b | 0x20) : b
-            mask |= (UInt64(1) << UInt64(lb & 63))
-        }
-        return mask
     }
 }

@@ -31,18 +31,12 @@ struct App: AsyncParsableCommand {
     @Option(name: .long, help: "Ranking scheme: default (score, length), path (score, pathname, length), history (score only). Mirrors fzf --scheme.")
     var scheme: String = "path"
 
-    @Option(name: .long, help: "Matcher backend: fuzzymatch (default), utf8, or swfast.")
-    var matcher: String = "fuzzymatch"
-
     @Option(name: .long, help: "Non-interactive query mode: read stdin, search for QUERY, print top results with rank points. Useful for scripting and debugging.")
     var query: String?
 
     mutating func run() async throws {
         guard let sortScheme = SortScheme.parse(scheme) else {
             throw ValidationError("invalid --scheme '\(scheme)' (expected: default, path, history)")
-        }
-        guard let matcherAlgorithm = MatcherAlgorithm.parse(matcher) else {
-            throw ValidationError("invalid --matcher '\(matcher)' (expected: utf8, swfast, fuzzymatch)")
         }
         let runner = Runner(
             options: Options(
@@ -51,8 +45,7 @@ struct App: AsyncParsableCommand {
                 caseSensitive: caseSensitive,
                 preview: preview,
                 previewFloat: previewFloat,
-                scheme: sortScheme,
-                matcherAlgorithm: matcherAlgorithm
+                scheme: sortScheme
             )
         )
         if let query = query {

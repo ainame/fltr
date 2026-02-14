@@ -26,21 +26,12 @@ public enum SortScheme: Sendable {
 public struct FuzzyMatcher: Sendable {
     let caseSensitive: Bool
     let scheme: SortScheme
-    let algorithm: MatcherAlgorithm
     private let backend: any MatcherBackend
 
-    public init(caseSensitive: Bool = false, scheme: SortScheme = .path, algorithm: MatcherAlgorithm = .fuzzymatch) {
+    public init(caseSensitive: Bool = false, scheme: SortScheme = .path) {
         self.caseSensitive = caseSensitive
         self.scheme = scheme
-        self.algorithm = algorithm
-        switch algorithm {
-        case .utf8:
-            self.backend = Utf8MatcherBackend()
-        case .swfast:
-            self.backend = SwFastMatcherBackend()
-        case .fuzzymatch:
-            self.backend = FuzzyMatchBackend()
-        }
+        self.backend = FuzzyMatchBackend()
     }
 
     /// Prepare a pattern for repeated matching. Create once per query, reuse across all candidates.

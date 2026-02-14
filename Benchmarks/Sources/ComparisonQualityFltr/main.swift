@@ -90,18 +90,12 @@ private struct App {
 
     static func run() {
         guard CommandLine.arguments.count >= 2 else {
-            fputs("Usage: comparison-quality-fltr <tsv-path> [--matcher utf8|swfast]\n", stderr)
+            fputs("Usage: comparison-quality-fltr <tsv-path>\n", stderr)
             exit(2)
         }
 
         let tsvPath = CommandLine.arguments[1]
-        let args = CommandLine.arguments
-        let matcherName = argValue(for: "--matcher", in: args) ?? "utf8"
-        guard let matcherAlgorithm = MatcherAlgorithm.parse(matcherName) else {
-            fputs("invalid --matcher '\(matcherName)' (expected: utf8, swfast)\n", stderr)
-            exit(2)
-        }
-        let matcher = FuzzyMatcher(caseSensitive: false, scheme: .path, algorithm: matcherAlgorithm)
+        let matcher = FuzzyMatcher(caseSensitive: false, scheme: .path)
         let instruments = loadCorpus(from: tsvPath)
 
         let symbolCandidates = instruments.map(\.symbol)
@@ -184,11 +178,6 @@ private struct App {
         if lhs.score != rhs.score { return lhs.score > rhs.score }
         if lhs.length != rhs.length { return lhs.length < rhs.length }
         return lhs.index < rhs.index
-    }
-
-    private static func argValue(for flag: String, in args: [String]) -> String? {
-        guard let idx = args.firstIndex(of: flag), idx + 1 < args.count else { return nil }
-        return args[idx + 1]
     }
 
     private static func loadCorpus(from path: String) -> [Instrument] {

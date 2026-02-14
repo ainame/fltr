@@ -129,7 +129,7 @@ public struct MatcherBenchmark {
 
         print()
 
-        let backendMatcher = FuzzyMatcher(caseSensitive: false, scheme: .path, algorithm: .fuzzymatch)
+        let backendMatcher = FuzzyMatcher(caseSensitive: false, scheme: .path)
         let timeUtf8 = benchmark(name: "Fltr backend (fuzzymatch)") { pattern, text in
             backendMatcher.match(pattern: pattern, text: text)
         }

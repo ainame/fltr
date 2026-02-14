@@ -93,14 +93,13 @@ private struct App {
         let tsvPath: String
         let queriesPath: String
         let iterations: Int
-        let matcherAlgorithm: MatcherAlgorithm
     }
 
     static func main() {
         let config = parseArgs()
         let queries = loadQueries(from: config.queriesPath)
         let instruments = loadCorpus(from: config.tsvPath)
-        let matcher = FuzzyMatcher(caseSensitive: false, scheme: .path, algorithm: config.matcherAlgorithm)
+        let matcher = FuzzyMatcher(caseSensitive: false, scheme: .path)
 
         let symbolCandidates = instruments.map(\.symbol)
         let nameCandidates = instruments.map(\.name)
@@ -134,7 +133,7 @@ private struct App {
         var iterationTotalsMs: [Double] = []
 
         print("")
-        print("=== Benchmark: fltr(\(config.matcherAlgorithm)) scoring \(queries.count) queries x \(instruments.count) candidates ===")
+        print("=== Benchmark: fltr(fuzzymatch) scoring \(queries.count) queries x \(instruments.count) candidates ===")
         print("")
 
         for iter in 0..<config.iterations {
@@ -236,12 +235,7 @@ private struct App {
         let tsvPath = argValue(for: "--tsv", in: args) ?? "FuzzyMatch/Resources/instruments-export.tsv"
         let queriesPath = argValue(for: "--queries", in: args) ?? "FuzzyMatch/Resources/queries.tsv"
         let iterations = argValue(for: "--iterations", in: args).flatMap(Int.init) ?? 5
-        let matcherName = argValue(for: "--matcher", in: args) ?? "utf8"
-        guard let matcherAlgorithm = MatcherAlgorithm.parse(matcherName) else {
-            fputs("invalid --matcher '\(matcherName)' (expected: utf8, swfast)\n", stderr)
-            exit(2)
-        }
-        return Config(tsvPath: tsvPath, queriesPath: queriesPath, iterations: max(1, iterations), matcherAlgorithm: matcherAlgorithm)
+        return Config(tsvPath: tsvPath, queriesPath: queriesPath, iterations: max(1, iterations))
     }
 
     private static func argValue(for flag: String, in args: [String]) -> String? {
