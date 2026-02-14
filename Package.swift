@@ -92,6 +92,18 @@ let package = Package(
             path: "Sources/Benchmarks"
         ),
 
+        // FuzzyMatch comparison harnesses
+        .executableTarget(
+            name: "comparison-bench-fltr",
+            dependencies: ["FltrLib"],
+            path: "Sources/ComparisonBenchFltr"
+        ),
+        .executableTarget(
+            name: "comparison-quality-fltr",
+            dependencies: ["FltrLib"],
+            path: "Sources/ComparisonQualityFltr"
+        ),
+
         // Memory profiling test
         .executableTarget(
             name: "memory-test",
