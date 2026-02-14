@@ -90,19 +90,27 @@ public struct Utf8FuzzyMatch: Sendable {
     /// I32 layout:
     ///   F   [0 … M)     first-occurrence (global index) of each pattern byte
     ///   T   [M … M+W)   lowered text bytes as Int32
-    final class MatrixBuffer: @unchecked Sendable {
-        var I16: [Int16] = []
-        var I32: [Int32] = []
+    ///
+    /// Reusable buffer for DP scoring. Create one per thread/task.
+    /// Analogous to FuzzyMatch's `ScoringBuffer`.
+    public final class ScoringBuffer: @unchecked Sendable {
+        public var I16: [Int16] = []
+        public var I32: [Int32] = []
 
-        @inlinable func ensureI16(_ n: Int) {
+        @inlinable public func ensureI16(_ n: Int) {
             if I16.count < n { I16 = [Int16](repeating: 0, count: n) }
         }
-        @inlinable func ensureI32(_ n: Int) {
+        @inlinable public func ensureI32(_ n: Int) {
             if I32.count < n { I32 = [Int32](repeating: 0, count: n) }
         }
     }
 
-    @TaskLocal static var matrixBuffer: MatrixBuffer?
+    /// Create a new scoring buffer. Call once per thread/task.
+    public static func makeBuffer() -> ScoringBuffer {
+        ScoringBuffer()
+    }
+
+    @TaskLocal static var matrixBuffer: ScoringBuffer?
 
     // ─── ASCII helpers ─────────────────────────────────────────────────────
     @inlinable
@@ -125,6 +133,7 @@ public struct Utf8FuzzyMatch: Sendable {
     static func asciiFuzzyIndex(
         pattern: Span<UInt8>, text: Span<UInt8>,
         caseSensitive: Bool,
+        patternIsPreLowercased: Bool = false,
         F: UnsafeMutablePointer<Int32>
     ) -> (minIdx: Int, maxIdx: Int)? {
         let M = pattern.count, N = text.count
@@ -135,10 +144,10 @@ public struct Utf8FuzzyMatch: Sendable {
             pattern.withUnsafeBufferPointer { patBuf in
                 guard let textBase = textBuf.baseAddress,
                       let patBase = patBuf.baseAddress else { return }
-                
+
                 var idx = 0, lastIdx = 0
                 for pidx in 0..<M {
-                    let pb = caseSensitive ? patBase[pidx] : toLower(patBase[pidx])
+                    let pb = (caseSensitive || patternIsPreLowercased) ? patBase[pidx] : toLower(patBase[pidx])
                     
                     // Use memchr for SIMD-optimized byte search (case-sensitive)
                     if caseSensitive {
@@ -176,7 +185,7 @@ public struct Utf8FuzzyMatch: Sendable {
                 let minIdx = (Int(F[0]) > 0) ? Int(F[0]) - 1 : 0
 
                 // backward: rightmost occurrence of last pattern byte
-                let lastPb = caseSensitive ? patBase[M-1] : toLower(patBase[M-1])
+                let lastPb = (caseSensitive || patternIsPreLowercased) ? patBase[M-1] : toLower(patBase[M-1])
                 var scopeLast = lastIdx
                 if caseSensitive {
                     var i = N - 1
@@ -197,6 +206,43 @@ public struct Utf8FuzzyMatch: Sendable {
     }
 
     // ─── Main entry ────────────────────────────────────────────────────────
+
+    /// High-performance overload: uses pre-prepared pattern and explicit buffer.
+    /// This is the recommended API for matching against many candidates.
+    ///
+    /// - Parameters:
+    ///   - prepared: Pre-processed pattern (created once per query)
+    ///   - textBuf: Pre-sliced view into a TextBuffer
+    ///   - buffer: Reusable scoring buffer (one per thread/task)
+    /// - Returns: Match result or nil if no match
+    public static func match(
+        prepared: PreparedPattern,
+        textBuf: UnsafeBufferPointer<UInt8>,
+        buffer: inout ScoringBuffer
+    ) -> MatchResult? {
+        guard !prepared.lowercasedBytes.isEmpty else {
+            return MatchResult(score: 0, positions: [])
+        }
+
+        // For multi-token patterns, this should be called via FuzzyMatcher
+        // which handles the multi-token logic. Here we just match the single token.
+        return prepared.lowercasedBytes.withUnsafeBufferPointer { patBuf in
+            let patternSpan = Span(_unsafeElements: patBuf)
+            let textSpan = Span(_unsafeElements: textBuf)
+            let M = patternSpan.count, N = textSpan.count
+            guard M <= N else { return nil }
+
+            return _matchCore(
+                patSpan: patternSpan,
+                txtSpan: textSpan,
+                M: M,
+                N: N,
+                caseSensitive: prepared.caseSensitive,
+                buffer: buffer,
+                patternIsPreLowercased: !prepared.caseSensitive
+            )
+        }
+    }
 
     /// Zero-copy overload: *textBuf* is a pre-sliced view into a ``TextBuffer``.
     /// Avoids constructing a ``String`` on the hot path.
@@ -235,14 +281,23 @@ public struct Utf8FuzzyMatch: Sendable {
     }
 
     // ─── Shared core ───────────────────────────────────────────────────────
-    private static func _matchCore(patSpan: Span<UInt8>, txtSpan: Span<UInt8>, M: Int, N: Int, caseSensitive: Bool) -> MatchResult? {
-        let buf = matrixBuffer ?? MatrixBuffer()
+    private static func _matchCore(
+        patSpan: Span<UInt8>,
+        txtSpan: Span<UInt8>,
+        M: Int,
+        N: Int,
+        caseSensitive: Bool,
+        buffer: ScoringBuffer? = nil,
+        patternIsPreLowercased: Bool = false
+    ) -> MatchResult? {
+        let buf = buffer ?? matrixBuffer ?? ScoringBuffer()
         buf.ensureI32(M + N)
 
         // ── Phase 1 ──────────────────────────────────────────────────────
         guard let scope = asciiFuzzyIndex(
             pattern: patSpan, text: txtSpan,
             caseSensitive: caseSensitive,
+            patternIsPreLowercased: patternIsPreLowercased,
             F: buf.I32.withUnsafeMutableBufferPointer { $0.baseAddress! }
         ) else { return nil }
 
@@ -278,7 +333,7 @@ public struct Utf8FuzzyMatch: Sendable {
                                 let pat = patRaw.baseAddress!
                                 let txt = txtRaw.baseAddress!
 
-                                let pchar0: UInt8 = caseSensitive ? pat[0] : toLower(pat[0])
+                                let pchar0: UInt8 = (caseSensitive || patternIsPreLowercased) ? pat[0] : toLower(pat[0])
                                 var prevH0: Int16 = 0
                                 var prevCls: Int  = 1   // delimiter (path scheme initialCharClass)
                                 var inGap = false
@@ -357,7 +412,7 @@ public struct Utf8FuzzyMatch: Sendable {
 
                     for pidx in 1..<M {
                         let fRel = Int(Fp[pidx]) - minIdx
-                        let pch  = caseSensitive ? pat[pidx] : toLower(pat[pidx])
+                        let pch  = (caseSensitive || patternIsPreLowercased) ? pat[pidx] : toLower(pat[pidx])
                         let row  = pidx * W
                         let prev = (pidx - 1) * W
 

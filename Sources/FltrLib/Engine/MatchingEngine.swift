@@ -29,12 +29,14 @@ struct MatchingEngine: Sendable {
             return ResultMerger(partitions: [all])
         }
 
+        // Prepare the pattern once for all candidates
+        let prepared = matcher.prepare(pattern)
+
         // Small dataset - use single-threaded with buffer reuse
         if items.count < parallelThreshold {
             let results = buffer.withBytes { allBytes in
-                Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
-                    matchItemsFromBuffer(pattern: pattern, items: items, allBytes: allBytes)
-                }
+                var scoringBuffer = matcher.makeBuffer()
+                return matchItemsFromBuffer(prepared: prepared, items: items, allBytes: allBytes, scoringBuffer: &scoringBuffer)
             }
             return ResultMerger(partitions: [results])
         }
@@ -54,9 +56,8 @@ struct MatchingEngine: Sendable {
                     guard !Task.isCancelled else { return [] }
 
                     return buffer.withBytes { allBytes in
-                        Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
-                            self.matchItemsFromBuffer(pattern: pattern, items: Array(items[partStart..<partEnd]), allBytes: allBytes)
-                        }
+                        var scoringBuffer = self.matcher.makeBuffer()
+                        return self.matchItemsFromBuffer(prepared: prepared, items: Array(items[partStart..<partEnd]), allBytes: allBytes, scoringBuffer: &scoringBuffer)
                     }
                 }
 
@@ -93,6 +94,9 @@ struct MatchingEngine: Sendable {
         let totalChunks = chunkList.chunkCount
         guard totalChunks > 0 else { return .empty }
 
+        // Prepare the pattern once for all candidates
+        let prepared = matcher.prepare(pattern)
+
         let cpuCount = ProcessInfo.processInfo.activeProcessorCount
         let chunksPerPartition = max(1, totalChunks / cpuCount)
 
@@ -107,59 +111,58 @@ struct MatchingEngine: Sendable {
                     guard !Task.isCancelled else { return [] }
 
                     return buffer.withBytes { allBytes in
-                        Utf8FuzzyMatch.$matrixBuffer.withValue(Utf8FuzzyMatch.MatrixBuffer()) {
-                            var partitionMatches: [MatchedItem] = []
+                        var scoringBuffer = self.matcher.makeBuffer()
+                        var partitionMatches: [MatchedItem] = []
 
-                            for ci in partitionStart..<partitionEnd {
-                                guard !Task.isCancelled else { return [] }
+                        for ci in partitionStart..<partitionEnd {
+                            guard !Task.isCancelled else { return [] }
 
-                                let chunk = chunkList.chunk(at: ci)
+                            let chunk = chunkList.chunk(at: ci)
 
-                                // 1. Exact cache hit — zero matching work
-                                if let cached = cache.lookup(chunkIndex: ci, chunkCount: chunk.count, query: pattern) {
-                                    partitionMatches.append(contentsOf: cached)
-                                    continue
-                                }
-
-                                // 2. Search hit — narrow the candidate set
-                                let candidates = cache.search(chunkIndex: ci, chunkCount: chunk.count, query: pattern)
-
-                                var chunkResults: [MatchedItem] = []
-
-                                if let candidates = candidates {
-                                    for candidate in candidates {
-                                        let item = candidate.item
-                                        let slice = UnsafeBufferPointer(
-                                            start: allBytes.baseAddress! + Int(item.offset),
-                                            count: Int(item.length)
-                                        )
-                                        if let result = self.matcher.match(pattern: pattern, textBuf: slice) {
-                                            chunkResults.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
-                                        }
-                                    }
-                                } else {
-                                    // 3. Full miss — match every item in the chunk
-                                    for i in 0..<chunk.count {
-                                        let item = chunk[i]
-                                        let slice = UnsafeBufferPointer(
-                                            start: allBytes.baseAddress! + Int(item.offset),
-                                            count: Int(item.length)
-                                        )
-                                        if let result = self.matcher.match(pattern: pattern, textBuf: slice) {
-                                            chunkResults.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
-                                        }
-                                    }
-                                }
-
-                                // 4. Store if selectivity gate passes
-                                cache.add(chunkIndex: ci, chunkCount: chunk.count, query: pattern, results: chunkResults)
-
-                                partitionMatches.append(contentsOf: chunkResults)
+                            // 1. Exact cache hit — zero matching work
+                            if let cached = cache.lookup(chunkIndex: ci, chunkCount: chunk.count, query: pattern) {
+                                partitionMatches.append(contentsOf: cached)
+                                continue
                             }
-                            // Sort this partition locally — the Merger does the global interleave
-                            partitionMatches.sort(by: rankLessThan)
-                            return partitionMatches
+
+                            // 2. Search hit — narrow the candidate set
+                            let candidates = cache.search(chunkIndex: ci, chunkCount: chunk.count, query: pattern)
+
+                            var chunkResults: [MatchedItem] = []
+
+                            if let candidates = candidates {
+                                for candidate in candidates {
+                                    let item = candidate.item
+                                    let slice = UnsafeBufferPointer(
+                                        start: allBytes.baseAddress! + Int(item.offset),
+                                        count: Int(item.length)
+                                    )
+                                    if let result = self.matcher.match(prepared, textBuf: slice, buffer: &scoringBuffer) {
+                                        chunkResults.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
+                                    }
+                                }
+                            } else {
+                                // 3. Full miss — match every item in the chunk
+                                for i in 0..<chunk.count {
+                                    let item = chunk[i]
+                                    let slice = UnsafeBufferPointer(
+                                        start: allBytes.baseAddress! + Int(item.offset),
+                                        count: Int(item.length)
+                                    )
+                                    if let result = self.matcher.match(prepared, textBuf: slice, buffer: &scoringBuffer) {
+                                        chunkResults.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
+                                    }
+                                }
+                            }
+
+                            // 4. Store if selectivity gate passes
+                            cache.add(chunkIndex: ci, chunkCount: chunk.count, query: pattern, results: chunkResults)
+
+                            partitionMatches.append(contentsOf: chunkResults)
                         }
+                        // Sort this partition locally — the Merger does the global interleave
+                        partitionMatches.sort(by: rankLessThan)
+                        return partitionMatches
                     }
                 }
 
@@ -181,7 +184,7 @@ struct MatchingEngine: Sendable {
 
     /// Match a slice of items using a pre-opened buffer pointer.
     /// Caller must hold the buffer pointer alive for the duration.
-    private func matchItemsFromBuffer(pattern: String, items: [Item], allBytes: UnsafeBufferPointer<UInt8>) -> [MatchedItem] {
+    private func matchItemsFromBuffer(prepared: PreparedPattern, items: [Item], allBytes: UnsafeBufferPointer<UInt8>, scoringBuffer: inout Utf8FuzzyMatch.ScoringBuffer) -> [MatchedItem] {
         var matched: [MatchedItem] = []
         for item in items {
             if matched.count % 100 == 0 {
@@ -191,7 +194,7 @@ struct MatchingEngine: Sendable {
                 start: allBytes.baseAddress! + Int(item.offset),
                 count: Int(item.length)
             )
-            if let result = matcher.match(pattern: pattern, textBuf: slice) {
+            if let result = matcher.match(prepared, textBuf: slice, buffer: &scoringBuffer) {
                 matched.append(MatchedItem(item: item, matchResult: result, allBytes: allBytes))
             }
         }

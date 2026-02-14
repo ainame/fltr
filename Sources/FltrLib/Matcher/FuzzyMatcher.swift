@@ -32,6 +32,93 @@ struct FuzzyMatcher: Sendable {
         self.scheme = scheme
     }
 
+    /// Prepare a pattern for repeated matching. Create once per query, reuse across all candidates.
+    /// This is the recommended API for matching against many candidates.
+    ///
+    /// Example:
+    /// ```swift
+    /// let prepared = matcher.prepare("foo bar")
+    /// var buffer = matcher.makeBuffer()
+    /// for item in items {
+    ///     let result = matcher.match(prepared, textBuf: item.bytes, buffer: &buffer)
+    /// }
+    /// ```
+    func prepare(_ pattern: String) -> PreparedPattern {
+        PreparedPattern(pattern: pattern, caseSensitive: caseSensitive)
+    }
+
+    /// Create a scoring buffer. Call once per thread/task.
+    func makeBuffer() -> Utf8FuzzyMatch.ScoringBuffer {
+        Utf8FuzzyMatch.makeBuffer()
+    }
+
+    /// High-performance match using prepared pattern and explicit buffer.
+    /// Handles multi-token (space-separated AND) matching.
+    ///
+    /// - Parameters:
+    ///   - prepared: Pre-processed pattern (created once per query)
+    ///   - textBuf: Pre-sliced view into a TextBuffer
+    ///   - buffer: Reusable scoring buffer (one per thread/task)
+    /// - Returns: Match result or nil if no match
+    func match(
+        _ prepared: PreparedPattern,
+        textBuf: UnsafeBufferPointer<UInt8>,
+        buffer: inout Utf8FuzzyMatch.ScoringBuffer
+    ) -> MatchResult? {
+        guard !prepared.lowercasedBytes.isEmpty else {
+            return MatchResult(score: 0, positions: [])
+        }
+
+        // Single token: direct match
+        if !prepared.isMultiToken {
+            return Utf8FuzzyMatch.match(prepared: prepared, textBuf: textBuf, buffer: &buffer)
+        }
+
+        // Multi-token: match each token (all must match for AND behavior)
+        var totalScore: Int16 = 0
+        var allPositions: [UInt16] = []
+
+        for tokenRange in prepared.tokenRanges {
+            // Create a temporary PreparedPattern for this token
+            // (already lowercased, so we can reuse the pre-processed bytes)
+            let tokenBytes = Array(prepared.lowercasedBytes[tokenRange])
+            let tokenPrepared = PreparedPattern(
+                pattern: String(decoding: tokenBytes, as: UTF8.self),
+                caseSensitive: prepared.caseSensitive
+            )
+
+            // Match using the prepared API
+            guard let result = Utf8FuzzyMatch.match(
+                prepared: tokenPrepared,
+                textBuf: textBuf,
+                buffer: &buffer
+            ) else {
+                return nil
+            }
+            totalScore += result.score
+            allPositions.append(contentsOf: result.positions)
+        }
+
+        guard !allPositions.isEmpty else {
+            return MatchResult(score: 0, positions: [])
+        }
+
+        // Sort and deduplicate in-place
+        allPositions.sort()
+        var writeIndex = 1
+        for readIndex in 1..<allPositions.count {
+            if allPositions[readIndex] != allPositions[readIndex - 1] {
+                if writeIndex != readIndex {
+                    allPositions[writeIndex] = allPositions[readIndex]
+                }
+                writeIndex += 1
+            }
+        }
+        allPositions.removeLast(allPositions.count - writeIndex)
+
+        return MatchResult(score: totalScore, positions: allPositions)
+    }
+
     /// Match a pattern against text
     /// Supports space-separated tokens as AND operator (all tokens must match)
     func match(pattern: String, text: String) -> MatchResult? {
