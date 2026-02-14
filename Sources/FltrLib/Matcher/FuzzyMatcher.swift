@@ -64,34 +64,7 @@ public struct FuzzyMatcher: Sendable {
         guard !prepared.lowercasedBytes.isEmpty else {
             return RankMatch(score: 0, minBegin: 0)
         }
-
-        // Single token: direct match
-        if !prepared.isMultiToken {
-            return backend.matchRank(prepared: prepared, textBuf: textBuf, scratch: buffer)
-        }
-
-        // Multi-token: match each token (all must match for AND behavior)
-        var totalScore: Int16 = 0
-        var minBegin = UInt16.max
-
-        for tokenRange in prepared.tokenRanges {
-            let tokenBytes = Array(prepared.lowercasedBytes[tokenRange])
-            let tokenPrepared = PreparedPattern(
-                pattern: String(decoding: tokenBytes, as: UTF8.self),
-                caseSensitive: prepared.caseSensitive
-            )
-
-            guard let result = backend.matchRank(prepared: tokenPrepared, textBuf: textBuf, scratch: buffer) else {
-                return nil
-            }
-            totalScore += result.score
-            minBegin = min(minBegin, result.minBegin)
-        }
-
-        if minBegin == UInt16.max {
-            minBegin = 0
-        }
-        return RankMatch(score: totalScore, minBegin: minBegin)
+        return backend.matchRank(prepared: prepared, textBuf: textBuf, scratch: buffer)
     }
 
     /// High-performance highlight match using prepared pattern and explicit buffer.
@@ -104,45 +77,7 @@ public struct FuzzyMatcher: Sendable {
         guard !prepared.lowercasedBytes.isEmpty else {
             return MatchResult(score: 0, positions: [])
         }
-
-        if !prepared.isMultiToken {
-            return backend.matchHighlight(prepared: prepared, textBuf: textBuf, scratch: buffer)
-        }
-
-        var totalScore: Int16 = 0
-        var allPositions: [UInt16] = []
-
-        for tokenRange in prepared.tokenRanges {
-            let tokenBytes = Array(prepared.lowercasedBytes[tokenRange])
-            let tokenPrepared = PreparedPattern(
-                pattern: String(decoding: tokenBytes, as: UTF8.self),
-                caseSensitive: prepared.caseSensitive
-            )
-
-            guard let result = backend.matchHighlight(prepared: tokenPrepared, textBuf: textBuf, scratch: buffer) else {
-                return nil
-            }
-            totalScore += result.score
-            allPositions.append(contentsOf: result.positions)
-        }
-
-        guard !allPositions.isEmpty else {
-            return MatchResult(score: 0, positions: [])
-        }
-
-        allPositions.sort()
-        var writeIndex = 1
-        for readIndex in 1..<allPositions.count {
-            if allPositions[readIndex] != allPositions[readIndex - 1] {
-                if writeIndex != readIndex {
-                    allPositions[writeIndex] = allPositions[readIndex]
-                }
-                writeIndex += 1
-            }
-        }
-        allPositions.removeLast(allPositions.count - writeIndex)
-
-        return MatchResult(score: totalScore, positions: allPositions)
+        return backend.matchHighlight(prepared: prepared, textBuf: textBuf, scratch: buffer)
     }
 
     /// Backward-compatible alias for highlight matching with prepared patterns.
@@ -154,56 +89,13 @@ public struct FuzzyMatcher: Sendable {
         matchForHighlight(prepared, textBuf: textBuf, buffer: &buffer)
     }
 
-    /// Match a pattern against text
-    /// Supports space-separated tokens as AND operator (all tokens must match)
+    /// Match a pattern against text.
+    /// Query semantics are delegated to the backend.
     public func match(pattern: String, text: String) -> MatchResult? {
         guard !pattern.isEmpty else {
             return MatchResult(score: 0, positions: [])
         }
-
-        // Fast path: no space → single token, skip split entirely
-        guard pattern.utf8.contains(0x20) else {
-            return backend.match(pattern: pattern, text: text, caseSensitive: caseSensitive)
-        }
-
-        // Multi-token: split and AND-match
-        let tokens = pattern.split(separator: " ", omittingEmptySubsequences: true)
-        guard !tokens.isEmpty else {
-            return MatchResult(score: 0, positions: [])
-        }
-        if tokens.count == 1 {
-            return backend.match(pattern: String(tokens[0]), text: text, caseSensitive: caseSensitive)
-        }
-
-        // Multiple tokens - all must match (AND behavior)
-        var totalScore: Int16 = 0
-        var allPositions: [UInt16] = []
-
-        for token in tokens {
-            guard let result = backend.match(pattern: String(token), text: text, caseSensitive: caseSensitive) else {
-                // If any token doesn't match, the whole pattern doesn't match
-                return nil
-            }
-            totalScore += result.score
-            allPositions.append(contentsOf: result.positions)
-        }
-
-        // Remove duplicate positions and sort (optimized: sort then deduplicate in-place)
-        if !allPositions.isEmpty {
-            allPositions.sort()
-            var writeIndex = 1
-            for readIndex in 1..<allPositions.count {
-                if allPositions[readIndex] != allPositions[readIndex - 1] {
-                    if writeIndex != readIndex {
-                        allPositions[writeIndex] = allPositions[readIndex]
-                    }
-                    writeIndex += 1
-                }
-            }
-            allPositions.removeLast(allPositions.count - writeIndex)
-        }
-
-        return MatchResult(score: totalScore, positions: allPositions)
+        return backend.match(pattern: pattern, text: text, caseSensitive: caseSensitive)
     }
 
     /// Zero-copy overload: *textBuf* is a pre-sliced ``UnsafeBufferPointer``
@@ -214,41 +106,7 @@ public struct FuzzyMatcher: Sendable {
         guard !pattern.isEmpty else {
             return MatchResult(score: 0, positions: [])
         }
-
-        // Fast path: no space → single token, skip split entirely.
-        guard pattern.utf8.contains(0x20) else {
-            return backend.match(pattern: pattern, textBuf: textBuf, caseSensitive: caseSensitive)
-        }
-
-        // Multi-token: split and AND-match.
-        var totalScore: Int16 = 0
-        var allPositions: [UInt16] = []
-        for token in pattern.split(separator: " ", omittingEmptySubsequences: true) {
-            guard let result = backend.match(pattern: String(token), textBuf: textBuf, caseSensitive: caseSensitive) else {
-                return nil
-            }
-            totalScore += result.score
-            allPositions.append(contentsOf: result.positions)
-        }
-
-        guard !allPositions.isEmpty else {
-            return MatchResult(score: 0, positions: [])
-        }
-
-        // Sort and deduplicate in-place
-        allPositions.sort()
-        var writeIndex = 1
-        for readIndex in 1..<allPositions.count {
-            if allPositions[readIndex] != allPositions[readIndex - 1] {
-                if writeIndex != readIndex {
-                    allPositions[writeIndex] = allPositions[readIndex]
-                }
-                writeIndex += 1
-            }
-        }
-        allPositions.removeLast(allPositions.count - writeIndex)
-
-        return MatchResult(score: totalScore, positions: allPositions)
+        return backend.match(pattern: pattern, textBuf: textBuf, caseSensitive: caseSensitive)
     }
 
 }
