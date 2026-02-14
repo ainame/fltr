@@ -93,12 +93,14 @@ private struct App {
         let tsvPath: String
         let queriesPath: String
         let iterations: Int
+        let matcherAlgorithm: MatcherAlgorithm
     }
 
     static func main() {
         let config = parseArgs()
         let queries = loadQueries(from: config.queriesPath)
         let instruments = loadCorpus(from: config.tsvPath)
+        let matcher = FuzzyMatcher(caseSensitive: false, scheme: .path, algorithm: config.matcherAlgorithm)
 
         let symbolCandidates = instruments.map(\.symbol)
         let nameCandidates = instruments.map(\.name)
@@ -117,11 +119,11 @@ private struct App {
 
         // Warmup
         do {
-            var buffer = Utf8FuzzyMatch.makeBuffer()
+            var buffer = matcher.makeBuffer()
             for q in queries {
-                let prepared = prepareTokens(q.text)
+                let prepared = matcher.prepare(q.text)
                 for candidate in candidates(for: q.field) {
-                    _ = scoreCandidate(candidate, preparedTokens: prepared, buffer: &buffer)
+                    _ = scoreCandidate(candidate, matcher: matcher, prepared: prepared, buffer: &buffer)
                 }
             }
             print("Warmup complete")
@@ -132,18 +134,18 @@ private struct App {
         var iterationTotalsMs: [Double] = []
 
         print("")
-        print("=== Benchmark: fltr(Utf8FuzzyMatch) scoring \(queries.count) queries x \(instruments.count) candidates ===")
+        print("=== Benchmark: fltr(\(config.matcherAlgorithm)) scoring \(queries.count) queries x \(instruments.count) candidates ===")
         print("")
 
         for iter in 0..<config.iterations {
-            var buffer = Utf8FuzzyMatch.makeBuffer()
+            var buffer = matcher.makeBuffer()
             let iterStart = now()
 
             for (qi, q) in queries.enumerated() {
                 let pool = candidates(for: q.field)
-                let prepared = prepareTokens(q.text)
+                let prepared = matcher.prepare(q.text)
                 let qStart = now()
-                let matchCount = scoreQuery(preparedTokens: prepared, buffer: &buffer, candidates: pool)
+                let matchCount = scoreQuery(matcher: matcher, prepared: prepared, buffer: &buffer, candidates: pool)
                 let qEnd = now()
                 queryTimingsMs[qi].append(msFrom(qStart, to: qEnd))
                 if iter == 0 {
@@ -168,54 +170,46 @@ private struct App {
 
     private static func scoreCandidate(
         _ candidate: String,
-        preparedTokens: [PreparedPattern],
-        buffer: inout Utf8FuzzyMatch.ScoringBuffer
+        matcher: FuzzyMatcher,
+        prepared: PreparedPattern,
+        buffer: inout MatcherScratch
     ) -> Int? {
-        if preparedTokens.isEmpty {
+        if prepared.lowercasedBytes.isEmpty {
             return 0
         }
 
-        if let score = candidate.utf8.withContiguousStorageIfAvailable({ utf8 in
-            scoreCandidateBytes(
-                UnsafeBufferPointer(start: utf8.baseAddress, count: utf8.count),
-                preparedTokens: preparedTokens,
-                buffer: &buffer
-            )
+        if let score = candidate.utf8.withContiguousStorageIfAvailable({
+            scoreCandidateBytes(UnsafeBufferPointer(start: $0.baseAddress, count: $0.count), matcher: matcher, prepared: prepared, buffer: &buffer)
         }) {
             return score
         }
 
         let bytes = Array(candidate.utf8)
         return bytes.withUnsafeBufferPointer {
-            scoreCandidateBytes($0, preparedTokens: preparedTokens, buffer: &buffer)
+            scoreCandidateBytes($0, matcher: matcher, prepared: prepared, buffer: &buffer)
         }
     }
 
     private static func scoreCandidateBytes(
         _ text: UnsafeBufferPointer<UInt8>,
-        preparedTokens: [PreparedPattern],
-        buffer: inout Utf8FuzzyMatch.ScoringBuffer
+        matcher: FuzzyMatcher,
+        prepared: PreparedPattern,
+        buffer: inout MatcherScratch
     ) -> Int? {
-        var total = 0
-        for token in preparedTokens {
-            guard let result = Utf8FuzzyMatch.match(prepared: token, textBuf: text, buffer: &buffer) else {
-                return nil
-            }
-            total += Int(result.score)
-        }
-        return total
+        matcher.match(prepared, textBuf: text, buffer: &buffer).map { Int($0.score) }
     }
 
     private static func scoreQuery(
-        preparedTokens: [PreparedPattern],
-        buffer: inout Utf8FuzzyMatch.ScoringBuffer,
+        matcher: FuzzyMatcher,
+        prepared: PreparedPattern,
+        buffer: inout MatcherScratch,
         candidates: [String]
     ) -> Int {
         var matchCount = 0
         var heap = MinHeap()
 
         for (ci, candidate) in candidates.enumerated() {
-            guard let score = scoreCandidate(candidate, preparedTokens: preparedTokens, buffer: &buffer) else {
+            guard let score = scoreCandidate(candidate, matcher: matcher, prepared: prepared, buffer: &buffer) else {
                 continue
             }
             matchCount += 1
@@ -237,18 +231,17 @@ private struct App {
         return lhs.index < rhs.index
     }
 
-    private static func prepareTokens(_ query: String) -> [PreparedPattern] {
-        query.split(separator: " ", omittingEmptySubsequences: true).map {
-            PreparedPattern(pattern: String($0), caseSensitive: false)
-        }
-    }
-
     private static func parseArgs() -> Config {
         let args = CommandLine.arguments
         let tsvPath = argValue(for: "--tsv", in: args) ?? "FuzzyMatch/Resources/instruments-export.tsv"
         let queriesPath = argValue(for: "--queries", in: args) ?? "FuzzyMatch/Resources/queries.tsv"
         let iterations = argValue(for: "--iterations", in: args).flatMap(Int.init) ?? 5
-        return Config(tsvPath: tsvPath, queriesPath: queriesPath, iterations: max(1, iterations))
+        let matcherName = argValue(for: "--matcher", in: args) ?? "utf8"
+        guard let matcherAlgorithm = MatcherAlgorithm.parse(matcherName) else {
+            fputs("invalid --matcher '\(matcherName)' (expected: utf8, swfast)\n", stderr)
+            exit(2)
+        }
+        return Config(tsvPath: tsvPath, queriesPath: queriesPath, iterations: max(1, iterations), matcherAlgorithm: matcherAlgorithm)
     }
 
     private static func argValue(for flag: String, in args: [String]) -> String? {

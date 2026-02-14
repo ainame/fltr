@@ -90,18 +90,25 @@ private struct App {
 
     static func run() {
         guard CommandLine.arguments.count >= 2 else {
-            fputs("Usage: comparison-quality-fltr <tsv-path>\n", stderr)
+            fputs("Usage: comparison-quality-fltr <tsv-path> [--matcher utf8|swfast]\n", stderr)
             exit(2)
         }
 
         let tsvPath = CommandLine.arguments[1]
+        let args = CommandLine.arguments
+        let matcherName = argValue(for: "--matcher", in: args) ?? "utf8"
+        guard let matcherAlgorithm = MatcherAlgorithm.parse(matcherName) else {
+            fputs("invalid --matcher '\(matcherName)' (expected: utf8, swfast)\n", stderr)
+            exit(2)
+        }
+        let matcher = FuzzyMatcher(caseSensitive: false, scheme: .path, algorithm: matcherAlgorithm)
         let instruments = loadCorpus(from: tsvPath)
 
         let symbolCandidates = instruments.map(\.symbol)
         let nameCandidates = instruments.map(\.name)
         let isinCandidates = instruments.map(\.isin)
 
-        var buffer = Utf8FuzzyMatch.makeBuffer()
+        var buffer = matcher.makeBuffer()
 
         while let line = readLine() {
             let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
@@ -109,7 +116,7 @@ private struct App {
 
             let query = String(parts[0])
             let field = String(parts[1])
-            let prepared = prepareTokens(query)
+            let prepared = matcher.prepare(query)
 
             let pool: [String]
             switch field {
@@ -124,7 +131,7 @@ private struct App {
             var heap = MinHeap()
 
             for (idx, candidate) in pool.enumerated() {
-                guard let score = scoreCandidate(candidate, preparedTokens: prepared, buffer: &buffer) else {
+                guard let score = scoreCandidate(candidate, matcher: matcher, prepared: prepared, buffer: &buffer) else {
                     continue
                 }
                 let ranked = RankedCandidate(score: score, length: candidate.utf8.count, index: idx)
@@ -142,56 +149,46 @@ private struct App {
         }
     }
 
-    private static func prepareTokens(_ query: String) -> [PreparedPattern] {
-        query.split(separator: " ", omittingEmptySubsequences: true).map {
-            PreparedPattern(pattern: String($0), caseSensitive: false)
-        }
-    }
-
     private static func scoreCandidate(
         _ candidate: String,
-        preparedTokens: [PreparedPattern],
-        buffer: inout Utf8FuzzyMatch.ScoringBuffer
+        matcher: FuzzyMatcher,
+        prepared: PreparedPattern,
+        buffer: inout MatcherScratch
     ) -> Int? {
-        if preparedTokens.isEmpty {
+        if prepared.lowercasedBytes.isEmpty {
             return 0
         }
 
-        if let score = candidate.utf8.withContiguousStorageIfAvailable({ utf8 in
-            scoreCandidateBytes(
-                UnsafeBufferPointer(start: utf8.baseAddress, count: utf8.count),
-                preparedTokens: preparedTokens,
-                buffer: &buffer
-            )
+        if let score = candidate.utf8.withContiguousStorageIfAvailable({
+            scoreCandidateBytes(UnsafeBufferPointer(start: $0.baseAddress, count: $0.count), matcher: matcher, prepared: prepared, buffer: &buffer)
         }) {
             return score
         }
 
         let bytes = Array(candidate.utf8)
         return bytes.withUnsafeBufferPointer {
-            scoreCandidateBytes($0, preparedTokens: preparedTokens, buffer: &buffer)
+            scoreCandidateBytes($0, matcher: matcher, prepared: prepared, buffer: &buffer)
         }
     }
 
     private static func scoreCandidateBytes(
         _ text: UnsafeBufferPointer<UInt8>,
-        preparedTokens: [PreparedPattern],
-        buffer: inout Utf8FuzzyMatch.ScoringBuffer
+        matcher: FuzzyMatcher,
+        prepared: PreparedPattern,
+        buffer: inout MatcherScratch
     ) -> Int? {
-        var total = 0
-        for token in preparedTokens {
-            guard let result = Utf8FuzzyMatch.match(prepared: token, textBuf: text, buffer: &buffer) else {
-                return nil
-            }
-            total += Int(result.score)
-        }
-        return total
+        matcher.match(prepared, textBuf: text, buffer: &buffer).map { Int($0.score) }
     }
 
     private static func isBetter(_ lhs: RankedCandidate, than rhs: RankedCandidate) -> Bool {
         if lhs.score != rhs.score { return lhs.score > rhs.score }
         if lhs.length != rhs.length { return lhs.length < rhs.length }
         return lhs.index < rhs.index
+    }
+
+    private static func argValue(for flag: String, in args: [String]) -> String? {
+        guard let idx = args.firstIndex(of: flag), idx + 1 < args.count else { return nil }
+        return args[idx + 1]
     }
 
     private static func loadCorpus(from path: String) -> [Instrument] {

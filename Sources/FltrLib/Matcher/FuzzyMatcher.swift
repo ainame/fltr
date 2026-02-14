@@ -23,13 +23,13 @@ public enum SortScheme: Sendable {
 }
 
 /// Main fuzzy matching interface
-struct FuzzyMatcher: Sendable {
+public struct FuzzyMatcher: Sendable {
     let caseSensitive: Bool
     let scheme: SortScheme
     let algorithm: MatcherAlgorithm
     private let backend: any MatcherBackend
 
-    init(caseSensitive: Bool = false, scheme: SortScheme = .path, algorithm: MatcherAlgorithm = .utf8) {
+    public init(caseSensitive: Bool = false, scheme: SortScheme = .path, algorithm: MatcherAlgorithm = .utf8) {
         self.caseSensitive = caseSensitive
         self.scheme = scheme
         self.algorithm = algorithm
@@ -52,12 +52,12 @@ struct FuzzyMatcher: Sendable {
     ///     let result = matcher.match(prepared, textBuf: item.bytes, buffer: &buffer)
     /// }
     /// ```
-    func prepare(_ pattern: String) -> PreparedPattern {
+    public func prepare(_ pattern: String) -> PreparedPattern {
         backend.prepare(pattern, caseSensitive: caseSensitive)
     }
 
     /// Create a scoring buffer. Call once per thread/task.
-    func makeBuffer() -> MatcherScratch {
+    public func makeBuffer() -> MatcherScratch {
         backend.makeScratch()
     }
 
@@ -69,7 +69,7 @@ struct FuzzyMatcher: Sendable {
     ///   - textBuf: Pre-sliced view into a TextBuffer
     ///   - buffer: Reusable scoring buffer (one per thread/task)
     /// - Returns: Match result or nil if no match
-    func match(
+    public func match(
         _ prepared: PreparedPattern,
         textBuf: UnsafeBufferPointer<UInt8>,
         buffer: inout MatcherScratch
@@ -126,7 +126,7 @@ struct FuzzyMatcher: Sendable {
 
     /// Match a pattern against text
     /// Supports space-separated tokens as AND operator (all tokens must match)
-    func match(pattern: String, text: String) -> MatchResult? {
+    public func match(pattern: String, text: String) -> MatchResult? {
         guard !pattern.isEmpty else {
             return MatchResult(score: 0, positions: [])
         }
@@ -180,7 +180,7 @@ struct FuzzyMatcher: Sendable {
     /// into a ``TextBuffer``.  Avoids constructing a ``String`` on the hot path.
     /// Multi-token (space-separated AND) is supported; tokens are extracted as
     /// ``Span<UInt8>`` slices of the pattern's UTF-8 — no ``String`` per token.
-    func match(pattern: String, textBuf: UnsafeBufferPointer<UInt8>) -> MatchResult? {
+    public func match(pattern: String, textBuf: UnsafeBufferPointer<UInt8>) -> MatchResult? {
         guard !pattern.isEmpty else {
             return MatchResult(score: 0, positions: [])
         }

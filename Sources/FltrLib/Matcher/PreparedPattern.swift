@@ -29,6 +29,10 @@ public struct PreparedPattern: Sendable {
     /// Whether case-sensitive matching was requested.
     public let caseSensitive: Bool
 
+    /// 64-bit folded byte mask used for fast negative prefiltering.
+    /// A missing bit in candidate text guarantees no match.
+    public let foldedByteMask: UInt64
+
     /// Whether this is a multi-token pattern (space-separated AND query).
     public var isMultiToken: Bool { tokenRanges.count > 1 }
 
@@ -44,6 +48,7 @@ public struct PreparedPattern: Sendable {
         // Pre-lowercase the entire pattern for case-insensitive matching
         let lowercased = caseSensitive ? pattern : pattern.lowercased()
         self.lowercasedBytes = Array(lowercased.utf8)
+        self.foldedByteMask = Self.computeFoldedMask(lowercasedBytes)
 
         // Split on spaces to create token ranges
         var ranges: [Range<Int>] = []
@@ -69,5 +74,14 @@ public struct PreparedPattern: Sendable {
 
         // If no tokens found (empty or all spaces), treat entire string as one token
         self.tokenRanges = ranges.isEmpty ? [0..<lowercasedBytes.count] : ranges
+    }
+
+    @inline(__always)
+    static func computeFoldedMask(_ bytes: [UInt8]) -> UInt64 {
+        var mask: UInt64 = 0
+        for b in bytes {
+            mask |= (UInt64(1) << UInt64(b & 63))
+        }
+        return mask
     }
 }
