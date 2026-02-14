@@ -29,7 +29,7 @@ public struct FuzzyMatcher: Sendable {
     let algorithm: MatcherAlgorithm
     private let backend: any MatcherBackend
 
-    public init(caseSensitive: Bool = false, scheme: SortScheme = .path, algorithm: MatcherAlgorithm = .utf8) {
+    public init(caseSensitive: Bool = false, scheme: SortScheme = .path, algorithm: MatcherAlgorithm = .fuzzymatch) {
         self.caseSensitive = caseSensitive
         self.scheme = scheme
         self.algorithm = algorithm

@@ -31,8 +31,8 @@ struct App: AsyncParsableCommand {
     @Option(name: .long, help: "Ranking scheme: default (score, length), path (score, pathname, length), history (score only). Mirrors fzf --scheme.")
     var scheme: String = "path"
 
-    @Option(name: .long, help: "Matcher backend: utf8, swfast, or fuzzymatch (upstream FuzzyMatch).")
-    var matcher: String = "utf8"
+    @Option(name: .long, help: "Matcher backend: fuzzymatch (default), utf8, or swfast.")
+    var matcher: String = "fuzzymatch"
 
     @Option(name: .long, help: "Non-interactive query mode: read stdin, search for QUERY, print top results with rank points. Useful for scripting and debugging.")
     var query: String?

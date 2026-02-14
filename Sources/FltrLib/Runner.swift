@@ -10,7 +10,7 @@ public struct Options {
     public let scheme: SortScheme
     public let matcherAlgorithm: MatcherAlgorithm
 
-    public init(height: Int?, multi: Bool, caseSensitive: Bool, preview: String?, previewFloat: String?, scheme: SortScheme = .path, matcherAlgorithm: MatcherAlgorithm = .utf8) {
+    public init(height: Int?, multi: Bool, caseSensitive: Bool, preview: String?, previewFloat: String?, scheme: SortScheme = .path, matcherAlgorithm: MatcherAlgorithm = .fuzzymatch) {
         self.height = height
         self.multi = multi
         self.caseSensitive = caseSensitive
