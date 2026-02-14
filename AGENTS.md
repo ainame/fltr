@@ -65,13 +65,15 @@ FltrCSystem (C Shim Library)
 
 - **UIController** (`Sources/fltr/UI/UIController.swift`): Main event loop orchestrator (actor) with 100ms refresh interval for streaming data. Owns the debounce task, fetchItemsTask, and the single render path. Holds `MergerCache` and `PreviewState` as stored-property structs — all access stays actor-isolated with zero extra hops. Materialises the visible item window from the ResultMerger before each render pass.
 
+- **HighlightResolver** (`Sources/fltr/UI/HighlightResolver.swift`): fzf-style lazy highlight resolver.  Match positions are computed on-demand for visible rows only, keyed by `(query, item.index)` with a small LRU cache to avoid repeated recomputation while scrolling.
+
 - **MergerCache** (`Sources/fltr/UI/MergerCache.swift`): Single-entry `(pattern, itemCount) → ResultMerger` cache extracted from UIController. `lookup` / `store` / `invalidate` are the full surface. Low-selectivity results (> 100 k) are deliberately not cached.
 
 - **PreviewState** (`Sources/fltr/UI/PreviewState.swift`): All preview view state in one struct: cached output, scroll offset, visibility toggles, hit-test bounds, and the `PreviewManager` reference. Owns the two render helpers (`renderSplit`, `renderFloating`) that forward to PreviewManager. Task lifecycle (`currentPreviewTask`) stays on UIController.  Preview is opt-in: both `showSplit` and `showFloating` start `false`; the user toggles the pane on with Ctrl-O.  `refreshPreview` and `refreshPreviewIfConfigured` short-circuit while the pane is hidden — no subprocess is spawned until the first toggle.
 
 - **InputHandler** (`Sources/fltr/UI/InputHandler.swift`): Parses keyboard/mouse events (escape sequences, arrow keys, mouse scrolling) and routes them to appropriate state updates.
 
-- **UIRenderer** (`Sources/fltr/UI/UIRenderer.swift`): Renders UI elements (input field with cursor, item list, status bar, borders) using single-buffer strategy for performance. Receives the pre-sliced visible item window as a parameter (materialised by UIController).
+- **UIRenderer** (`Sources/fltr/UI/UIRenderer.swift`): Renders UI elements (input field with cursor, item list, status bar, borders) using single-buffer strategy for performance. Receives the pre-sliced visible item window and per-row highlight positions (materialised lazily by UIController + HighlightResolver).
 
 - **PreviewManager** (`Sources/fltr/UI/PreviewManager.swift`): Executes preview commands with timeout and renders both split-screen (fzf style) and floating window previews.
 
@@ -134,6 +136,7 @@ Raw Input → UIController.handleKey()
 Key optimizations implemented:
 - **TextBuffer**: all input text lives in a single contiguous ``[UInt8]``; each ``Item`` is an ``(offset, length)`` window — no per-line ``String`` heap allocation.  The ``TextBuffer`` reference is *not* stored inside ``Item``; it is threaded explicitly through the call graph so that every ``Item`` is exactly 12 bytes.
 - **12-byte Item** (`Int32 index` + `UInt32 offset` + `UInt32 length`): the shared ``TextBuffer`` reference was removed from ``Item`` (all Items pointed to the same instance).  ``index`` is ``Int32`` via the ``Item.Index`` typealias.  The hot-path matcher receives the buffer as ``UnsafeBufferPointer<UInt8>`` inside ``withBytes`` scopes; ``buildPoints`` walks raw bytes with zero ``String`` allocation.  Cold paths (render, output, preview) receive a ``TextBuffer`` parameter.  The chunkBacked zero-alloc path synthesises ``MatchedItem`` with pre-computed ``points`` — no buffer access at all.
+- **On-demand highlight positions (fzf-style)**: ranking uses score + packed points from rank-only match metadata; full highlight ``positions`` are computed only for visible rows during render (or top rows in `--query` output).  This removes full-position allocation from the hot matching path.
 - **shrinkToFit after EOF**: ``TextBuffer.shrinkToFit()`` and ``ChunkStore.shrinkToFit()`` each reallocate their backing ``[UInt8]`` / ``[Chunk]`` at exact count, reclaiming the ~30 % headroom left by Array's doubling growth strategy.  Both are invoked once via ``ItemCache.sealAndShrink()``, called by ``StdinReader`` immediately after the read loop completes.
 - **fread-based StdinReader**: 64 KB read buffer, byte-scan for newlines, whitespace trimmed without Foundation; bytes appended directly into TextBuffer off-actor
 - **ChunkStore frozen/tail split**: sealed chunks are CoW-shared across snapshots; the tail (~2.4 KB) is the only per-snapshot copy, so concurrent streaming snapshots add negligible RSS
@@ -146,24 +149,24 @@ Key optimizations implemented:
 
 ### Benchmarking matching changes
 
-When changing matcher/engine code, run the release benchmark with at least 500k items and compare medians:
+When changing matcher/engine/UI highlight code, run the release benchmark with at least 500k items and compare medians:
 
 ```bash
 swift build -c release --package-path Benchmarks --target matcher-benchmark
-Benchmarks/.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2
+.build/arm64-apple-macosx/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2
 ```
 
 Recommended workflow for agents (before/after comparison):
 
 1) Run baseline and save output:
 ```bash
-Benchmarks/.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.before.txt
+.build/arm64-apple-macosx/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.before.txt
 ```
 
 2) Apply changes, rebuild, rerun with the same arguments:
 ```bash
 swift build -c release --package-path Benchmarks --target matcher-benchmark
-Benchmarks/.build/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.after.txt
+.build/arm64-apple-macosx/release/matcher-benchmark --count 500000 --mode all --runs 5 --warmup 2 --seed 1337 > /tmp/fltr-bench.after.txt
 ```
 
 3) Compare the median/avg lines (engine + matcher) and report deltas:
@@ -174,6 +177,7 @@ diff -u /tmp/fltr-bench.before.txt /tmp/fltr-bench.after.txt
 Notes:
 - Keep the same `--count`, `--seed`, `--mode`, and machine when comparing.
 - Prefer `--mode engine` if only the parallel matcher changed.
+- Treat this as a mandatory gate for perf-sensitive changes: include before/after deltas in your PR/summary.
 
 ### Makefile helpers
 
