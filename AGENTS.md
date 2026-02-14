@@ -226,3 +226,23 @@ See [PROFILING.md](PROFILING.md) for detailed profiling guide.
 - macOS 14+ (Sonoma)
 - Linux (via Swift 6.2 Static Linux SDK with musl)
 - Requires ANSI escape sequence support and `/dev/tty` access
+
+## Package Layout
+
+- Root package (`Package.swift`): core app/library (`fltr`, `FltrLib`, `TUI`) and tests.
+- Examples package (`Examples/Package.swift`): `DeclarativeTUI`, `tui-demo`, `declarative-demo`.
+- Benchmarks package (`Benchmarks/Package.swift`): `matcher-benchmark`, `comparison-bench-fltr`, `comparison-quality-fltr`.
+
+When building non-core targets, pass `--package-path` explicitly.
+
+## FuzzyMatch Comparison Script
+
+Use the helper script to run FuzzyMatch and fltr throughput benchmarks on the same corpus/queries and print a summary:
+
+```bash
+# Edit Distance comparison (default)
+scripts/fuzzy_match_benchmark.sh --iterations 5 --fm-mode ed
+
+# Compare both FuzzyMatch ED and SW against fltr
+scripts/fuzzy_match_benchmark.sh --iterations 5 --fm-mode both
+```
