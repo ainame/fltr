@@ -6,6 +6,11 @@ let package = Package(
     platforms: [
         .macOS(.v26),
     ],
+    products: [
+        .executable(name: "fltr", targets: ["fltr"]),
+        .library(name: "FltrLib", targets: ["FltrLib"]),
+        .library(name: "TUI", targets: ["TUI"]),
+    ],
     traits: [
         .trait(name: "MmapBuffer", description: "Use mmap-based TextBuffer for reduced RSS on macOS"),
     ],
@@ -55,53 +60,6 @@ let package = Package(
         .target(
             name: "FltrCSystem",
             dependencies: []
-        ),
-
-        // DeclarativeTUI - SwiftUI-style declarative TUI framework
-        .target(
-            name: "DeclarativeTUI",
-            dependencies: ["TUI"],
-            path: "Examples/DeclarativeTUI",
-            exclude: ["README.md"]
-        ),
-
-        // Demo - Interactive TUI widget gallery
-        .executableTarget(
-            name: "tui-demo",
-            dependencies: [
-                "TUI",
-                .product(name: "SystemPackage", package: "swift-system"),
-            ],
-            path: "Examples/TUIDemo"
-        ),
-
-        // Declarative Demo - SwiftUI-style declarative TUI PoC
-        .executableTarget(
-            name: "declarative-demo",
-            dependencies: [
-                "DeclarativeTUI",
-                .product(name: "SystemPackage", package: "swift-system"),
-            ],
-            path: "Examples/DeclarativeDemo"
-        ),
-
-        // Benchmarks
-        .executableTarget(
-            name: "matcher-benchmark",
-            dependencies: ["FltrLib"],
-            path: "Sources/Benchmarks"
-        ),
-
-        // FuzzyMatch comparison harnesses
-        .executableTarget(
-            name: "comparison-bench-fltr",
-            dependencies: ["FltrLib"],
-            path: "Sources/ComparisonBenchFltr"
-        ),
-        .executableTarget(
-            name: "comparison-quality-fltr",
-            dependencies: ["FltrLib"],
-            path: "Sources/ComparisonQualityFltr"
         ),
 
         // Memory profiling test

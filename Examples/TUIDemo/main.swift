@@ -11,7 +11,7 @@ struct TUIDemo {
         } catch RawTerminal.TerminalError.failedToOpenTTY {
             print("Error: This demo requires a TTY (terminal) to run.")
             print("Please run it directly in your terminal, not through a pipe or redirect.")
-            print("\nUsage: swift run tui-demo")
+            print("\nUsage: swift run --package-path Examples tui-demo")
             exit(1)
         } catch {
             print("Error: \(error)")
