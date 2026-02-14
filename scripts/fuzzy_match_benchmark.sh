@@ -14,7 +14,7 @@ Default behavior:
 
 Options:
   --iterations N     Throughput iterations for benchmark runners (default: 5)
-  --fm-mode MODE     FuzzyMatch mode: ed, sw, or both (default: ed)
+  --fm-mode MODE     FuzzyMatch mode: ed, sw, or both (default: both)
   --skip-build       Reuse existing builds where possible
   --no-throughput    Skip throughput run
   --no-quality       Skip quality run
@@ -38,7 +38,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 ITERATIONS=5
-FM_MODE="ed"
+FM_MODE="both"
 SKIP_BUILD=false
 RUN_THROUGHPUT=true
 RUN_QUALITY=true
