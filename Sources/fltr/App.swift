@@ -31,7 +31,7 @@ struct App: AsyncParsableCommand {
     @Option(name: .long, help: "Ranking scheme: default (score, length), path (score, pathname, length), history (score only). Mirrors fzf --scheme.")
     var scheme: String = "path"
 
-    @Option(name: .long, help: "Matcher backend: utf8 (current default) or swfast (SW-style backend scaffold).")
+    @Option(name: .long, help: "Matcher backend: utf8, swfast, or fuzzymatch (upstream FuzzyMatch).")
     var matcher: String = "utf8"
 
     @Option(name: .long, help: "Non-interactive query mode: read stdin, search for QUERY, print top results with rank points. Useful for scripting and debugging.")
@@ -42,7 +42,7 @@ struct App: AsyncParsableCommand {
             throw ValidationError("invalid --scheme '\(scheme)' (expected: default, path, history)")
         }
         guard let matcherAlgorithm = MatcherAlgorithm.parse(matcher) else {
-            throw ValidationError("invalid --matcher '\(matcher)' (expected: utf8, swfast)")
+            throw ValidationError("invalid --matcher '\(matcher)' (expected: utf8, swfast, fuzzymatch)")
         }
         let runner = Runner(
             options: Options(

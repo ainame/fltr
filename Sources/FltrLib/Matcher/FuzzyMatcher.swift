@@ -38,6 +38,8 @@ public struct FuzzyMatcher: Sendable {
             self.backend = Utf8MatcherBackend()
         case .swfast:
             self.backend = SwFastMatcherBackend()
+        case .fuzzymatch:
+            self.backend = FuzzyMatchBackend()
         }
     }
 

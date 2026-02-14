@@ -21,6 +21,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-collections", from: "1.1.0"),
         .package(url: "https://github.com/ainame/swift-displaywidth", branch: "main"),
         .package(url: "https://github.com/swiftlang/swift-subprocess", from: "0.3.0"),
+        .package(url: "https://github.com/ordo-one/FuzzyMatch.git", from: "1.0.0"),
     ],
     targets: [
         // fltr - Fuzzy finder executable
@@ -43,6 +44,7 @@ let package = Package(
                 .product(name: "AsyncAlgorithms", package: "swift-async-algorithms"),
                 .product(name: "Collections", package: "swift-collections"),
                 .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "FuzzyMatch", package: "fuzzymatch"),
             ]
         ),
 

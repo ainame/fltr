@@ -62,6 +62,29 @@ private func matchItems(matcher: FuzzyMatcher, pattern: String, set: ItemSet) ->
     matchItems(matcher: matcher, pattern: pattern, items: set.items, buffer: set.buffer)
 }
 
+/// Run both rank and highlight code paths against one candidate text.
+private func matchRankAndHighlight(
+    matcher: FuzzyMatcher,
+    query: String,
+    text: String
+) -> (RankMatch?, MatchResult?) {
+    let prepared = matcher.prepare(query)
+    var scratch = matcher.makeBuffer()
+    return text.utf8.withContiguousStorageIfAvailable { ptr in
+        let textBuf = UnsafeBufferPointer(start: ptr.baseAddress, count: ptr.count)
+        let rank = matcher.matchForRank(prepared, textBuf: textBuf, buffer: &scratch)
+        let highlight = matcher.matchForHighlight(prepared, textBuf: textBuf, buffer: &scratch)
+        return (rank, highlight)
+    } ?? {
+        let bytes = Array(text.utf8)
+        return bytes.withUnsafeBufferPointer { textBuf in
+            let rank = matcher.matchForRank(prepared, textBuf: textBuf, buffer: &scratch)
+            let highlight = matcher.matchForHighlight(prepared, textBuf: textBuf, buffer: &scratch)
+            return (rank, highlight)
+        }
+    }()
+}
+
 // MARK: - Basic Matching Tests
 
 @Test("Basic fuzzy matching")
@@ -261,6 +284,35 @@ func whitespaceTrimmingAndEmpty() {
     let set = makeItems(["test"])
     let results = matchItems(matcher: matcher, pattern: "   ", set: set)
     #expect(results.count == 1)
+}
+
+@Test("FuzzyMatch backend keeps AND semantics for split query words")
+func fuzzyMatchBackendANDSemantics() {
+    let matcher = FuzzyMatcher(algorithm: .fuzzymatch)
+    #expect(matcher.match(pattern: "abc def", text: "xxabc_yydef_zz") != nil)
+    #expect(matcher.match(pattern: "abc def", text: "xxabc_only_zz") == nil)
+    #expect(matcher.match(pattern: "abc def", text: "yydef_only_zz") == nil)
+}
+
+@Test("FuzzyMatch backend rank/highlight paths both enforce AND")
+func fuzzyMatchBackendANDForRankAndHighlight() {
+    let matcher = FuzzyMatcher(algorithm: .fuzzymatch)
+
+    let both = matchRankAndHighlight(matcher: matcher, query: "abc def", text: "00abcxxdef00")
+    #expect(both.0 != nil)
+    #expect(both.1 != nil)
+    #expect(!(both.1?.positions.isEmpty ?? true))
+
+    let missing = matchRankAndHighlight(matcher: matcher, query: "abc def", text: "00abcxx000")
+    #expect(missing.0 == nil)
+    #expect(missing.1 == nil)
+}
+
+@Test("FuzzyMatch backend ignores empty tokens from multiple spaces")
+func fuzzyMatchBackendMultipleSpacesStillAND() {
+    let matcher = FuzzyMatcher(algorithm: .fuzzymatch)
+    #expect(matcher.match(pattern: "abc   def", text: "abc...def") != nil)
+    #expect(matcher.match(pattern: "abc   def", text: "abc...ghi") == nil)
 }
 
 // MARK: - Blackbox Integration Tests
